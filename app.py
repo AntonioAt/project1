@@ -12,19 +12,19 @@ class SolidControlAnalyzer:
 
     def calculate_dilution_and_sre(self, lgs_in, target_lgs, circ_vol_bbl):
         """
-        Calculates dilution volume and SRE based on established formulas.
+        Calculates dilution volume and SRE based on established analytical formulas.
         """
         if lgs_in <= target_lgs:
             return 0.0, 100.0, 0.0
             
-        # Volume of Dilution (VD)
+        # Volume of Dilution (VD) formula implementation
         v_d = circ_vol_bbl * ((lgs_in - target_lgs) / target_lgs)
         
-        # Solid Removal Efficiency (SRE)
+        # Solid Removal Efficiency (SRE) formula implementation
         sre = (1.0 - (v_d / circ_vol_bbl)) * 100.0
-        sre = max(0.0, sre)
+        sre = max(0.0, min(sre, 100.0))
         
-        # Cost of Dilution (CD)
+        # Cost of Dilution Process (CD)
         mud_cost = v_d * self.mud_price
         
         return v_d, sre, mud_cost
@@ -188,7 +188,10 @@ if st.sidebar.button("Run Physics Simulation", type="primary", use_container_wid
                 avg_rop = 0; lgs_sum = 0
                 for d, mw, pp, fg, rop_max in sec['log']:
                     temp = engine.get_temp_at_depth(d)
+                    
+                    # 1. Calculate Generated LGS based on physics
                     lgs = engine.calculate_generated_lgs(sec['hole'], rop_max, sec['gpm'], sre_mult)
+                    
                     pv, yp, r600, r300 = engine.calculate_rheology(lgs, temp)
                     ecd, rop = engine.calculate_hydraulics(pv, yp, mw, d, sec['hole'], sec['dp'], sec['gpm'], pp, rop_max)
                     
@@ -197,6 +200,7 @@ if st.sidebar.button("Run Physics Simulation", type="primary", use_container_wid
                     sim_res[sc_name]["pv"].append(pv); sim_res[sc_name]["yp"].append(yp); sim_res[sc_name]["r600"].append(r600); sim_res[sc_name]["r300"].append(r300)
                     avg_rop += rop; lgs_sum += lgs
                 
+                # 2. Automated Dilution Volume Calculation (VD)
                 sec_avg_lgs = lgs_sum / len(sec['log'])
                 sec_vd, sec_sre, sec_mud_cost = sc_ana.calculate_dilution_and_sre(sec_avg_lgs, target_lgs_des, circulating_volume)
                 
@@ -230,19 +234,18 @@ if st.sidebar.button("Run Physics Simulation", type="primary", use_container_wid
                 horizontal_spacing=0.08, vertical_spacing=0.15
             )
 
-            # Helper function for adding traces
             def add_trace_pair(fig, x_old, x_new, y_depth, row, col, name_old="Well A", name_new="Well B", show_leg=False):
-                fig.add_trace(go.Scatter(x=x_old, y=y_depth, name=name_old, line=dict(color='#e74c3c', width=2.5), mode='lines+markers', showlegend=show_leg), row=row, col=col)
-                fig.add_trace(go.Scatter(x=x_new, y=y_depth, name=name_new, line=dict(color='#3498db', width=2.5), mode='lines+markers', showlegend=show_leg), row=row, col=col)
+                fig.add_trace(go.Scatter(x=x_old, y=y_depth, name=name_old, line=dict(color='#e74c3c', width=2.5), mode='lines+markers', showlegend=show_leg, hovertemplate="%{x:.2f} | Depth: %{y:.0f} ft"), row=row, col=col)
+                fig.add_trace(go.Scatter(x=x_new, y=y_depth, name=name_new, line=dict(color='#3498db', width=2.5), mode='lines+markers', showlegend=show_leg, hovertemplate="%{x:.2f} | Depth: %{y:.0f} ft"), row=row, col=col)
                 fig.update_yaxes(autorange="reversed", row=row, col=col)
 
             add_trace_pair(fig, old["rop"], new["rop"], old["depth"], 1, 1, show_leg=True)
             
             add_trace_pair(fig, old["ecd"], new["ecd"], old["depth"], 1, 2)
-            fig.add_trace(go.Scatter(x=new["pp"], y=new["depth"], name='Pore Pressure', line=dict(color='black', dash='dash')), row=1, col=2)
-            fig.add_trace(go.Scatter(x=new["fg"], y=new["depth"], name='Frac Gradient', line=dict(color='black')), row=1, col=2)
+            fig.add_trace(go.Scatter(x=new["pp"], y=new["depth"], name='Pore Pressure', line=dict(color='black', dash='dash'), hovertemplate="%{x:.2f} ppg"), row=1, col=2)
+            fig.add_trace(go.Scatter(x=new["fg"], y=new["depth"], name='Frac Gradient', line=dict(color='black'), hovertemplate="%{x:.2f} ppg"), row=1, col=2)
             
-            fig.add_trace(go.Bar(x=['Well A', 'Well B'], y=[old["cost"], new["cost"]], marker_color=['#e74c3c', '#3498db'], text=[f'${old["cost"]/1e6:.2f}M', f'${new["cost"]/1e6:.2f}M'], textposition='auto'), row=1, col=3)
+            fig.add_trace(go.Bar(x=['Well A', 'Well B'], y=[old["cost"], new["cost"]], marker_color=['#e74c3c', '#3498db'], text=[f'${old["cost"]/1e6:.2f}M', f'${new["cost"]/1e6:.2f}M'], textposition='auto', hovertemplate="Cost: $%{y:,.0f}"), row=1, col=3)
             
             add_trace_pair(fig, old["lgs"], new["lgs"], old["depth"], 2, 1)
             fig.add_vline(x=target_lgs_des, line_dash="dash", line_color="black", annotation_text="Target LGS", row=2, col=1)
@@ -250,7 +253,7 @@ if st.sidebar.button("Run Physics Simulation", type="primary", use_container_wid
             add_trace_pair(fig, old["pv"], new["pv"], old["depth"], 2, 2)
             add_trace_pair(fig, old["yp"], new["yp"], old["depth"], 2, 3)
 
-            fig.update_layout(height=700, hovermode="y unified", margin=dict(t=50, l=20, r=20, b=20))
+            fig.update_layout(height=700, hovermode="y unified", margin=dict(t=50, l=20, r=20, b=20), template="plotly_white")
             st.plotly_chart(fig, use_container_width=True)
 
         with tab2:
