@@ -5,32 +5,27 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # =============================================================================
-# 1. ADVANCED PHYSICS MODULES (KRIEGER-DOUGHERTY, DILUTION & DENSITY)
+# 1. ADVANCED PHYSICS MODULES 
 # =============================================================================
 class SolidControlAnalyzer:
     def __init__(self, mud_price_bbl=75.0):
         self.mud_price = mud_price_bbl
 
     def calculate_dilution_and_sre(self, lgs_in, target_lgs, circ_vol_bbl):
-        # Logika Fisika: Tidak ada dilusi jika LGS di bawah target
         if lgs_in <= target_lgs:
             return 0.0, 100.0, 0.0
-            
         v_d = circ_vol_bbl * ((lgs_in - target_lgs) / target_lgs)
         sre = (1.0 - (v_d / circ_vol_bbl)) * 100.0
         sre = max(0.0, min(sre, 100.0))
         mud_cost = v_d * self.mud_price
-        
         return v_d, sre, mud_cost
 
 class Fann35Machine:
     def __init__(self):
         self.k_gamma = 1.703  
         self.k_tau = 0.511    
-    def get_shear_rate(self, rpm): 
-        return rpm * self.k_gamma
-    def reading_from_stress(self, stress_lb): 
-        return stress_lb / self.k_tau
+    def get_shear_rate(self, rpm): return rpm * self.k_gamma
+    def reading_from_stress(self, stress_lb): return stress_lb / self.k_tau
 
 class AdvancedDrillingPhysics:
     def __init__(self, base_pv, base_yp):
@@ -55,7 +50,6 @@ class AdvancedDrillingPhysics:
         return min(total_lgs, 25.0) 
 
     def calculate_actual_density(self, base_mw, lgs_pct):
-        # LGS rata-rata (shale/sand) memiliki SG 2.6 atau 21.7 ppg
         lgs_sg_ppg = 21.7
         lgs_frac = lgs_pct / 100.0
         actual_mw = (base_mw * (1.0 - lgs_frac)) + (lgs_sg_ppg * lgs_frac)
@@ -64,7 +58,6 @@ class AdvancedDrillingPhysics:
     def calculate_rheology(self, lgs_pct, temp_f):
         temp_diff = temp_f - 120.0
         thermal_factor = max(0.6, 1.0 - (0.005 * temp_diff))
-        
         phi = lgs_pct / 100.0
         phi_max = 0.60; eta = 2.5
         
@@ -100,16 +93,6 @@ class EconomicsAnalyzer:
         t_cost = (self.rig_rate * t_days) + self.bit_cost + mud_cost + (daily_equip_cost * t_days)
         return t_days, t_cost, (self.rig_rate * t_days)
 
-# =============================================================================
-# 2. SRE EQUIPMENT LOGIC & CONSTANTS
-# =============================================================================
-SRE_TYPES = {
-    "No Solid Control (Bypass)": {"lgs_multiplier": 2.5, "base_cost": 0.0},
-    "Shale Shaker Only": {"lgs_multiplier": 1.5, "base_cost": 500.0},
-    "Shaker + Desander/Desilter": {"lgs_multiplier": 1.1, "base_cost": 1200.0},
-    "Full System (Shaker + Centrifuge)": {"lgs_multiplier": 0.5, "base_cost": 2500.0}
-}
-
 def generate_dynamic_log(start_d, end_d, pp_base, fg_base, rop_base):
     log = []
     points = np.linspace(start_d + 100, end_d, 3) 
@@ -121,17 +104,44 @@ def generate_dynamic_log(start_d, end_d, pp_base, fg_base, rop_base):
     return log
 
 # =============================================================================
-# 3. STREAMLIT WEB APP FRONT-END 
+# 2. MODULAR EQUIPMENT CATALOG
+# =============================================================================
+EQUIPMENT_CATALOG = {
+    "Shale Shaker": {"pass_factor": 0.50, "cost": 500.0},
+    "Desander": {"pass_factor": 0.80, "cost": 300.0},
+    "Desilter": {"pass_factor": 0.80, "cost": 400.0},
+    "Mud Cleaner": {"pass_factor": 0.70, "cost": 800.0},
+    "Centrifuge": {"pass_factor": 0.40, "cost": 1500.0}
+}
+
+def calculate_modular_sre(selected_equipments):
+    if not selected_equipments:
+        return 2.5, 0.0 # No equipment: high bypass factor, 0 cost
+    
+    total_multiplier = 2.5
+    total_cost = 0.0
+    for eq in selected_equipments:
+        total_multiplier *= EQUIPMENT_CATALOG[eq]["pass_factor"]
+        total_cost += EQUIPMENT_CATALOG[eq]["cost"]
+    
+    return total_multiplier, total_cost
+
+# =============================================================================
+# 3. STREAMLIT WEB APP FRONT-END (DYNAMIC SCENARIOS)
 # =============================================================================
 st.set_page_config(page_title="Drilling & Solid Control Simulator", layout="wide")
 
+# Initialize Dynamic Scenarios in Session State
+if "num_scenarios" not in st.session_state:
+    st.session_state.num_scenarios = 2
+
 st.title("First-Principles Drilling Simulator")
-st.markdown("Dynamic evaluation of Solid Removal Efficiency (SRE), Mud Density alteration due to LGS, and Rheology.")
+st.markdown("Dynamic scenario modeling of Modular Solid Control Equipment, Dilution Kinetics, and Rheology.")
 
 # --- SIDEBAR CONFIGURATION ---
-st.sidebar.header("Main Configuration")
+st.sidebar.header("Global Configurations")
 
-with st.sidebar.expander("Base Rig & Fluid Parameters", expanded=True):
+with st.sidebar.expander("Base Rig & Fluid Parameters", expanded=False):
     rig_rate = st.number_input("Rig Lease Rate (USD/Day)", value=35000.0, step=1000.0, format="%.2f")
     base_pv = st.number_input("Base Mud PV (cP)", value=14.0, step=0.5, format="%.2f")
     base_yp = st.number_input("Base Mud YP (lb/100ft2)", value=10.0, step=0.5, format="%.2f")
@@ -139,40 +149,61 @@ with st.sidebar.expander("Base Rig & Fluid Parameters", expanded=True):
     circulating_volume = st.number_input("Total Circulating Volume (bbls)", value=2000.0, step=100.0)
 
 with st.sidebar.expander("Well Trajectory & Hydraulics", expanded=False):
-    st.markdown("*Surface Section (17.5\")*")
-    len_sec1 = st.number_input("Length (ft) - Sec 1", value=1250.0, step=100.0)
+    len_sec1 = st.number_input("Length (ft) - Sec 1 (17.5\")", value=1250.0, step=100.0)
     gpm1 = st.number_input("GPM - Sec 1", value=1050.0, step=50.0)
-    
-    st.markdown("*Intermediate Section (12.25\")*")
-    len_sec2 = st.number_input("Length (ft) - Sec 2", value=3500.0, step=100.0)
+    len_sec2 = st.number_input("Length (ft) - Sec 2 (12.25\")", value=3500.0, step=100.0)
     gpm2 = st.number_input("GPM - Sec 2", value=850.0, step=50.0)
-    
-    st.markdown("*Production Section (8.5\")*")
-    len_sec3 = st.number_input("Length (ft) - Sec 3", value=3350.0, step=100.0)
+    len_sec3 = st.number_input("Length (ft) - Sec 3 (8.5\")", value=3350.0, step=100.0)
     gpm3 = st.number_input("GPM - Sec 3", value=450.0, step=50.0)
 
-with st.sidebar.expander("Solid Control Configuration", expanded=True):
-    sre_A = st.selectbox("SRE Type (Well A - Old System)", list(SRE_TYPES.keys()), index=1)
-    sre_B = st.selectbox("SRE Type (Well B - New System)", list(SRE_TYPES.keys()), index=3)
+st.sidebar.divider()
+st.sidebar.header("Scenario Builder")
+
+# Dynamic Scenario Management
+col1, col2 = st.sidebar.columns(2)
+if col1.button("➕ Add Scenario"):
+    st.session_state.num_scenarios += 1
+if col2.button("➖ Remove Scenario"):
+    if st.session_state.num_scenarios > 1:
+        st.session_state.num_scenarios -= 1
+
+# Dictionary to hold user configurations
+scenario_configs = {}
+
+for i in range(st.session_state.num_scenarios):
+    sc_name = f"Scenario {chr(65+i)}" # Generates Scenario A, B, C...
+    with st.sidebar.expander(f"🛠️ {sc_name} Equipment", expanded=(i<2)):
+        selected_eq = st.multiselect(
+            "Select Solid Control Equipment", 
+            options=list(EQUIPMENT_CATALOG.keys()), 
+            default=["Shale Shaker"] if i==0 else ["Shale Shaker", "Mud Cleaner", "Centrifuge"],
+            key=f"eq_{i}"
+        )
+        mult, cost = calculate_modular_sre(selected_eq)
+        st.caption(f"Daily Eq. Cost: ${cost:,.0f} | Extracted SRE Multiplier: {mult:.2f}")
+        scenario_configs[sc_name] = {"equipments": selected_eq, "multiplier": mult, "cost": cost}
+
+# PLOTLY COLORS DEFINITION
+SCENARIO_COLORS = ['#e74c3c', '#3498db', '#2ecc71', '#f1c40f', '#9b59b6', '#e67e22', '#1abc9c']
 
 # --- EXECUTION ENGINE ---
 if st.sidebar.button("Run Physics Simulation", type="primary", use_container_width=True):
-    with st.spinner("Processing cuttings generation, density variance, and rheology..."):
+    with st.spinner("Processing cuttings generation, modular SRE dynamics, and rheology..."):
         
         d1 = len_sec1; d2 = d1 + len_sec2; d3 = d2 + len_sec3
         
-        scenarios = {
-            "Well A (Old System)": { "daily_eq_cost": SRE_TYPES[sre_A]["base_cost"], "sections": [
-                {"hole": 17.5, "dp": 5.0, "len": len_sec1, "gpm": gpm1, "log": generate_dynamic_log(0, d1, 8.6, 11.5, 90)},
-                {"hole": 12.25, "dp": 5.0, "len": len_sec2, "gpm": gpm2, "log": generate_dynamic_log(d1, d2, 9.2, 12.8, 65)},
-                {"hole": 8.5, "dp": 4.0, "len": len_sec3, "gpm": gpm3, "log": generate_dynamic_log(d2, d3, 10.4, 14.8, 45)}
-            ]},
-            "Well B (New System)": { "daily_eq_cost": SRE_TYPES[sre_B]["base_cost"], "sections": [
-                {"hole": 17.5, "dp": 5.0, "len": len_sec1, "gpm": gpm1, "log": generate_dynamic_log(0, d1, 8.6, 11.5, 90)},
-                {"hole": 12.25, "dp": 5.0, "len": len_sec2, "gpm": gpm2, "log": generate_dynamic_log(d1, d2, 9.2, 12.8, 65)},
-                {"hole": 8.5, "dp": 4.0, "len": len_sec3, "gpm": gpm3, "log": generate_dynamic_log(d2, d3, 10.4, 14.8, 45)}
-            ]}
-        }
+        # Build scenario inputs dynamically
+        scenarios = {}
+        for sc_name, config in scenario_configs.items():
+            scenarios[sc_name] = {
+                "daily_eq_cost": config["cost"],
+                "lgs_multiplier": config["multiplier"],
+                "sections": [
+                    {"hole": 17.5, "dp": 5.0, "len": len_sec1, "gpm": gpm1, "log": generate_dynamic_log(0, d1, 8.6, 11.5, 90)},
+                    {"hole": 12.25, "dp": 5.0, "len": len_sec2, "gpm": gpm2, "log": generate_dynamic_log(d1, d2, 9.2, 12.8, 65)},
+                    {"hole": 8.5, "dp": 4.0, "len": len_sec3, "gpm": gpm3, "log": generate_dynamic_log(d2, d3, 10.4, 14.8, 45)}
+                ]
+            }
         
         engine = AdvancedDrillingPhysics(base_pv, base_yp)
         econ = EconomicsAnalyzer(rig_rate)
@@ -183,31 +214,27 @@ if st.sidebar.button("Run Physics Simulation", type="primary", use_container_wid
 
         for sc_name, sc_data in scenarios.items():
             t_cost = 0; t_days = 0; t_invest = 0; t_mud = 0; t_rig = 0; t_dilution = 0; t_sre = 0
-            sre_mult = SRE_TYPES[sre_A if "Old" in sc_name else sre_B]["lgs_multiplier"]
+            sre_mult = sc_data["lgs_multiplier"]
             
             for sec in sc_data["sections"]:
                 avg_rop = 0; lgs_sum = 0
                 for d, base_mw, pp, fg, rop_max in sec['log']:
                     temp = engine.get_temp_at_depth(d)
                     
-                    # 1. Hitung LGS
                     lgs = engine.calculate_generated_lgs(sec['hole'], rop_max, sec['gpm'], sre_mult)
-                    
-                    # 2. Hitung Kenaikan Densitas Aktual akibat LGS (SG 2.6)
                     actual_mw = engine.calculate_actual_density(base_mw, lgs)
                     
-                    # 3. Rheology & Hydraulics menggunakan Actual MW
                     pv, yp, r600, r300 = engine.calculate_rheology(lgs, temp)
                     ecd, rop = engine.calculate_hydraulics(pv, yp, actual_mw, d, sec['hole'], sec['dp'], sec['gpm'], pp, rop_max)
                     
-                    sim_res[sc_name]["hole"].append(sec['hole'])
-                    sim_res[sc_name]["depth"].append(d); sim_res[sc_name]["rop"].append(rop); sim_res[sc_name]["ecd"].append(ecd)
-                    sim_res[sc_name]["pp"].append(pp); sim_res[sc_name]["fg"].append(fg); sim_res[sc_name]["lgs"].append(lgs)
-                    sim_res[sc_name]["base_mw"].append(base_mw); sim_res[sc_name]["actual_mw"].append(actual_mw)
-                    sim_res[sc_name]["pv"].append(pv); sim_res[sc_name]["yp"].append(yp); sim_res[sc_name]["r600"].append(r600); sim_res[sc_name]["r300"].append(r300)
+                    sim_res[sc_name]["hole"].append(sec['hole']); sim_res[sc_name]["depth"].append(d)
+                    sim_res[sc_name]["rop"].append(rop); sim_res[sc_name]["ecd"].append(ecd)
+                    sim_res[sc_name]["pp"].append(pp); sim_res[sc_name]["fg"].append(fg)
+                    sim_res[sc_name]["lgs"].append(lgs); sim_res[sc_name]["base_mw"].append(base_mw); sim_res[sc_name]["actual_mw"].append(actual_mw)
+                    sim_res[sc_name]["pv"].append(pv); sim_res[sc_name]["yp"].append(yp)
+                    sim_res[sc_name]["r600"].append(r600); sim_res[sc_name]["r300"].append(r300)
                     avg_rop += rop; lgs_sum += lgs
                 
-                # 4. Dilution Calculation
                 sec_avg_lgs = lgs_sum / len(sec['log'])
                 sec_vd, sec_sre, sec_mud_cost = sc_ana.calculate_dilution_and_sre(sec_avg_lgs, target_lgs_des, circulating_volume)
                 
@@ -219,21 +246,12 @@ if st.sidebar.button("Run Physics Simulation", type="primary", use_container_wid
             sim_res[sc_name].update({"cost": t_cost, "days": t_days, "equip_invest": t_invest, "mud_cost": t_mud, "rig_cost": t_rig, "dilution_vol": t_dilution, "sre_avg": t_sre / len(sc_data["sections"])})
 
         # --- DASHBOARD RENDERING ---
-        old = sim_res["Well A (Old System)"]; new = sim_res["Well B (New System)"]
-        net_save = old["cost"] - new["cost"]; time_save = old["days"] - new["days"]
-        roi = (net_save / new["equip_invest"]) * 100 if new["equip_invest"] > 0 else 0
-        
         tab1, tab2, tab3 = st.tabs(["Interactive Dashboard", "Financial & Dilution Report", "Detailed Data Logs"])
         
         with tab1:
-            st.subheader("Performance Comparison")
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Well A Total Cost", f"${old['cost']:,.0f}")
-            c2.metric("Well B Total Cost", f"${new['cost']:,.0f}", f"{net_save:,.0f} Saved", delta_color="inverse")
-            c3.metric("Well B Drilling Time", f"{new['days']:.1f} Days", f"{time_save:.1f} Days Faster", delta_color="inverse")
-            c4.metric("ROI (SRE Upgrade)", f"{roi:,.0f} %")
+            st.subheader("Multi-Scenario Performance Comparison")
             
-            # PLOTLY INTERACTIVE CHARTS - WHITE BACKGROUND
+            # PLOTLY INTERACTIVE CHARTS
             fig = make_subplots(
                 rows=2, cols=3, 
                 subplot_titles=('Drilling Speed (ft/hr)', 'Hydraulics & Actual MW (ppg)', 'Total Cost (USD)', 
@@ -241,74 +259,92 @@ if st.sidebar.button("Run Physics Simulation", type="primary", use_container_wid
                 horizontal_spacing=0.08, vertical_spacing=0.15
             )
 
-            def add_trace_pair(fig, x_old, x_new, y_depth, row, col, name_old="Well A", name_new="Well B", show_leg=False):
-                fig.add_trace(go.Scatter(x=x_old, y=y_depth, name=name_old, line=dict(color='#e74c3c', width=2.5), mode='lines+markers', showlegend=show_leg, hovertemplate="%{x:.2f} | Depth: %{y:.0f} ft"), row=row, col=col)
-                fig.add_trace(go.Scatter(x=x_new, y=y_depth, name=name_new, line=dict(color='#3498db', width=2.5), mode='lines+markers', showlegend=show_leg, hovertemplate="%{x:.2f} | Depth: %{y:.0f} ft"), row=row, col=col)
-                fig.update_yaxes(autorange="reversed", row=row, col=col)
-
-            add_trace_pair(fig, old["rop"], new["rop"], old["depth"], 1, 1, show_leg=True)
-            
-            # Subplot 2: Hydraulics includes Actual MW
-            add_trace_pair(fig, old["ecd"], new["ecd"], old["depth"], 1, 2)
-            fig.add_trace(go.Scatter(x=old["actual_mw"], y=old["depth"], name='Well A (Actual MW)', line=dict(color='#e74c3c', dash='dot'), hovertemplate="MW: %{x:.2f} ppg"), row=1, col=2)
-            fig.add_trace(go.Scatter(x=new["actual_mw"], y=new["depth"], name='Well B (Actual MW)', line=dict(color='#3498db', dash='dot'), hovertemplate="MW: %{x:.2f} ppg"), row=1, col=2)
-            fig.add_trace(go.Scatter(x=new["pp"], y=new["depth"], name='Pore Pressure', line=dict(color='black', dash='dash'), hovertemplate="%{x:.2f} ppg"), row=1, col=2)
-            fig.add_trace(go.Scatter(x=new["fg"], y=new["depth"], name='Frac Gradient', line=dict(color='black'), hovertemplate="%{x:.2f} ppg"), row=1, col=2)
-            
-            fig.add_trace(go.Bar(x=['Well A', 'Well B'], y=[old["cost"], new["cost"]], marker_color=['#e74c3c', '#3498db'], text=[f'${old["cost"]/1e6:.2f}M', f'${new["cost"]/1e6:.2f}M'], textposition='auto', hovertemplate="Cost: $%{y:,.0f}"), row=1, col=3)
-            
-            add_trace_pair(fig, old["lgs"], new["lgs"], old["depth"], 2, 1)
-            # High visibility target line
+            # Common background traces (PP and FG) using Scenario A's depth geometry
+            base_sc = list(sim_res.keys())[0]
+            fig.add_trace(go.Scatter(x=sim_res[base_sc]["pp"], y=sim_res[base_sc]["depth"], name='Pore Pressure', line=dict(color='black', dash='dash'), hovertemplate="%{x:.2f} ppg"), row=1, col=2)
+            fig.add_trace(go.Scatter(x=sim_res[base_sc]["fg"], y=sim_res[base_sc]["depth"], name='Frac Gradient', line=dict(color='black'), hovertemplate="%{x:.2f} ppg"), row=1, col=2)
             fig.add_vline(x=target_lgs_des, line_dash="dash", line_color="black", line_width=2, annotation_text="Target LGS", row=2, col=1)
-            
-            add_trace_pair(fig, old["pv"], new["pv"], old["depth"], 2, 2)
-            add_trace_pair(fig, old["yp"], new["yp"], old["depth"], 2, 3)
 
-            # Styling untuk White Background Streamlit
+            # Loop through all dynamic scenarios to plot
+            costs_x = []; costs_y = []; bar_colors = []; bar_texts = []
+            
+            for idx, (sc_name, data) in enumerate(sim_res.items()):
+                c = SCENARIO_COLORS[idx % len(SCENARIO_COLORS)]
+                
+                # Plot ROP
+                fig.add_trace(go.Scatter(x=data["rop"], y=data["depth"], name=sc_name, line=dict(color=c, width=2.5), mode='lines+markers', hovertemplate="%{x:.2f} | Depth: %{y:.0f} ft"), row=1, col=1)
+                
+                # Plot Hydraulics (ECD and Actual MW)
+                fig.add_trace(go.Scatter(x=data["ecd"], y=data["depth"], name=f"{sc_name} (ECD)", line=dict(color=c, width=2.5), mode='lines+markers', showlegend=False, hovertemplate="ECD: %{x:.2f} ppg"), row=1, col=2)
+                fig.add_trace(go.Scatter(x=data["actual_mw"], y=data["depth"], name=f"{sc_name} (MW)", line=dict(color=c, dash='dot', width=1.5), mode='lines', showlegend=False, hovertemplate="Actual MW: %{x:.2f} ppg"), row=1, col=2)
+                
+                # Prepare Bar Chart Data
+                costs_x.append(sc_name)
+                costs_y.append(data["cost"])
+                bar_colors.append(c)
+                bar_texts.append(f'${data["cost"]/1e6:.2f}M')
+
+                # Plot LGS, PV, YP
+                fig.add_trace(go.Scatter(x=data["lgs"], y=data["depth"], line=dict(color=c, width=2.5), mode='lines+markers', showlegend=False, hovertemplate="%{x:.2f} %"), row=2, col=1)
+                fig.add_trace(go.Scatter(x=data["pv"], y=data["depth"], line=dict(color=c, width=2.5), mode='lines+markers', showlegend=False, hovertemplate="%{x:.1f} cP"), row=2, col=2)
+                fig.add_trace(go.Scatter(x=data["yp"], y=data["depth"], line=dict(color=c, width=2.5), mode='lines+markers', showlegend=False, hovertemplate="%{x:.1f} lb/100ft2"), row=2, col=3)
+
+                # Fix Y axes
+                fig.update_yaxes(autorange="reversed", row=1, col=1)
+                fig.update_yaxes(autorange="reversed", row=1, col=2)
+                fig.update_yaxes(autorange="reversed", row=2, col=1)
+                fig.update_yaxes(autorange="reversed", row=2, col=2)
+                fig.update_yaxes(autorange="reversed", row=2, col=3)
+
+            # Draw Dynamic Bar Chart
+            fig.add_trace(go.Bar(x=costs_x, y=costs_y, marker_color=bar_colors, text=bar_texts, textposition='auto', showlegend=False, hovertemplate="Cost: $%{y:,.0f}"), row=1, col=3)
+
             fig.update_layout(
-                height=700, 
+                height=750, 
                 hovermode="y unified", 
                 margin=dict(t=50, l=20, r=20, b=20),
                 paper_bgcolor='white',
                 plot_bgcolor='white',
-                font=dict(color='black')
+                font=dict(color='black'),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
             fig.update_xaxes(showline=True, linewidth=1, linecolor='black', gridcolor='lightgrey')
             fig.update_yaxes(showline=True, linewidth=1, linecolor='black', gridcolor='lightgrey')
-
-            # Render in Streamlit bypassing internal theme
             st.plotly_chart(fig, use_container_width=True, theme=None)
 
         with tab2:
-            st.subheader("Dynamic Authorization for Expenditure (AFE) & Dilution Kinetics")
-            st.table({
-                "Component": ["Total Operating Days", "Average SRE (%)", "Total Dilution Volume (bbls)", "Rig Lease Cost (USD)", "Mud Dilution Cost (USD)", "SRE CAPEX (USD)", "TOTAL WELL COST (USD)"],
-                "Well A (Old System)": [f"{old['days']:.1f}", f"{old['sre_avg']:.1f}%", f"{old['dilution_vol']:,.0f}", f"${old['rig_cost']:,.0f}", f"${old['mud_cost']:,.0f}", f"${old['equip_invest']:,.0f}", f"${old['cost']:,.0f}"],
-                "Well B (New System)": [f"{new['days']:.1f}", f"{new['sre_avg']:.1f}%", f"{new['dilution_vol']:,.0f}", f"${new['rig_cost']:,.0f}", f"${new['mud_cost']:,.0f}", f"${new['equip_invest']:,.0f}", f"${new['cost']:,.0f}"]
-            })
+            st.subheader("Multi-Scenario Economics & Dilution Report")
+            
+            summary_data = {
+                "Metric": ["Equipment Selected", "Operating Days", "Avg SRE (%)", "Dilution Vol (bbls)", "Rig Lease ($)", "Mud Cost ($)", "SRE Capex ($)", "TOTAL COST ($)"]
+            }
+            
+            for sc_name, data in sim_res.items():
+                eq_str = " + ".join(scenario_configs[sc_name]["equipments"]) if scenario_configs[sc_name]["equipments"] else "None (Bypass)"
+                summary_data[sc_name] = [
+                    eq_str,
+                    f"{data['days']:.1f}", 
+                    f"{data['sre_avg']:.1f}%", 
+                    f"{data['dilution_vol']:,.0f}", 
+                    f"${data['rig_cost']:,.0f}", 
+                    f"${data['mud_cost']:,.0f}", 
+                    f"${data['equip_invest']:,.0f}", 
+                    f"${data['cost']:,.0f}"
+                ]
+                
+            st.table(summary_data)
 
         with tab3:
-            st.subheader("Comprehensive Section & Depth Logs")
+            st.subheader("Comprehensive Data Logs")
             
-            # Compile detailed DataFrames
-            df_old = pd.DataFrame({
-                "Depth (ft)": old["depth"], "Hole (\")": old["hole"], "Generated LGS (%)": old["lgs"],
-                "Base MW (ppg)": old["base_mw"], "Actual MW (ppg)": old["actual_mw"], 
-                "PV (cP)": old["pv"], "YP (lb/100ft2)": old["yp"], "Fann 600": old["r600"], "Fann 300": old["r300"]
-            })
-            df_new = pd.DataFrame({
-                "Depth (ft)": new["depth"], "Hole (\")": new["hole"], "Generated LGS (%)": new["lgs"],
-                "Base MW (ppg)": new["base_mw"], "Actual MW (ppg)": new["actual_mw"], 
-                "PV (cP)": new["pv"], "YP (lb/100ft2)": new["yp"], "Fann 600": new["r600"], "Fann 300": new["r300"]
-            })
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown(f"**Well A (Old System - {sre_A})**")
-                st.dataframe(df_old, use_container_width=True, hide_index=True)
-            with col2:
-                st.markdown(f"**Well B (New System - {sre_B})**")
-                st.dataframe(df_new, use_container_width=True, hide_index=True)
+            for sc_name, data in sim_res.items():
+                st.markdown(f"**{sc_name} Data**")
+                df = pd.DataFrame({
+                    "Depth (ft)": data["depth"], "Hole (\")": data["hole"], "Generated LGS (%)": data["lgs"],
+                    "Base MW (ppg)": data["base_mw"], "Actual MW (ppg)": data["actual_mw"], 
+                    "PV (cP)": data["pv"], "YP (lb/100ft2)": data["yp"], "Fann 600": data["r600"], "Fann 300": data["r300"]
+                })
+                st.dataframe(df, use_container_width=True, hide_index=True)
 
 else:
-    st.info("Set the drilling parameters in the sidebar to simulate generated LGS, then click 'Run Physics Simulation'.")
+    st.info("Configure your custom scenarios and equipment in the sidebar, then click 'Run Physics Simulation'.")
