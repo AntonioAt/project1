@@ -1,24 +1,38 @@
 import streamlit as st
 import numpy as np
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # =============================================================================
-# 1. ADVANCED PHYSICS MODULES (KRIEGER-DOUGHERTY & CUTTINGS GENERATOR)
+# 1. ADVANCED PHYSICS MODULES (KRIEGER-DOUGHERTY & DILUTION KINETICS)
 # =============================================================================
 class SolidControlAnalyzer:
-    def __init__(self, water_content=0.90, mud_price_bbl=75.0):
-        self.Kw = water_content; self.mud_price = mud_price_bbl
-    def calculate_sre(self, hole_in, length_ft, washout, water_added_bbl, avg_lgs):
-        if avg_lgs <= 0: avg_lgs = 0.1
-        Vm = water_added_bbl / self.Kw
-        Vc = 0.000971 * (hole_in**2) * length_ft * washout
-        Vd = Vc / (avg_lgs / 100.0)
-        return max(0.0, (1.0 - (Vm / Vd)) * 100.0), (Vm * self.mud_price)
+    def __init__(self, mud_price_bbl=75.0):
+        self.mud_price = mud_price_bbl
+
+    def calculate_dilution_and_sre(self, lgs_in, target_lgs, circ_vol_bbl):
+        """
+        Calculates dilution volume and SRE based on established formulas.
+        """
+        if lgs_in <= target_lgs:
+            return 0.0, 100.0, 0.0
+            
+        # Volume of Dilution (VD)
+        v_d = circ_vol_bbl * ((lgs_in - target_lgs) / target_lgs)
+        
+        # Solid Removal Efficiency (SRE)
+        sre = (1.0 - (v_d / circ_vol_bbl)) * 100.0
+        sre = max(0.0, sre)
+        
+        # Cost of Dilution (CD)
+        mud_cost = v_d * self.mud_price
+        
+        return v_d, sre, mud_cost
 
 class Fann35Machine:
     def __init__(self):
-        self.k_gamma = 1.703  # RPM -> Shear Rate
-        self.k_tau = 0.511    # Dial Reading -> Shear Stress (lb/100ft2)
+        self.k_gamma = 1.703  
+        self.k_tau = 0.511    
     def get_shear_rate(self, rpm): 
         return rpm * self.k_gamma
     def reading_from_stress(self, stress_lb): 
@@ -27,11 +41,8 @@ class Fann35Machine:
 class AdvancedDrillingPhysics:
     def __init__(self, base_pv, base_yp):
         self.machine = Fann35Machine()
-        # Calibration to True Physical Stress
         self.polymer_visc_factor = base_pv / 3.0
         self.polymer_yield_strength = base_yp * 0.8
-        
-        # Geothermal Gradient
         self.surface_temp = 80.0 
         self.geo_gradient = 1.6  
 
@@ -39,25 +50,20 @@ class AdvancedDrillingPhysics:
         return self.surface_temp + (self.geo_gradient * (tvd_ft / 100.0))
 
     def calculate_generated_lgs(self, hole_diam_in, rop_fph, gpm, sre_multiplier):
-        # 1. Cuttings Volume
         hole_cap = (hole_diam_in ** 2) / 1029.4
         cuttings_bbl_hr = hole_cap * rop_fph
-        # 2. Mud Volume
         mud_bbl_hr = (gpm * 60) / 42.0
-        # 3. LGS Concentration (Fresh)
         transport_efficiency = 0.8
         lgs_concentration = (cuttings_bbl_hr / (mud_bbl_hr * transport_efficiency)) * 100.0
         
         background_lgs = 3.0
         total_lgs = (lgs_concentration + background_lgs) * sre_multiplier
-        return min(total_lgs, 25.0) # Safety cap at 25%
+        return min(total_lgs, 25.0) 
 
     def calculate_rheology(self, lgs_pct, temp_f):
-        # A. Thermal Thinning
         temp_diff = temp_f - 120.0
         thermal_factor = max(0.6, 1.0 - (0.005 * temp_diff))
         
-        # B. Krieger-Dougherty (Solid Effects)
         phi = lgs_pct / 100.0
         phi_max = 0.60; eta = 2.5
         
@@ -65,11 +71,9 @@ class AdvancedDrillingPhysics:
         rel_visc = (1 - (phi / phi_max)) ** (-eta * phi_max) if phi < phi_max else 50.0
         true_visc = mu_medium * rel_visc
         
-        # C. Yield Stress Thermal Agitation
         thermal_agitation = 1.0 + (0.001 * temp_diff)
         true_yield = (self.polymer_yield_strength + (0.8 * lgs_pct)) * thermal_agitation
         
-        # D. Fann 35 Simulation
         r600 = self.machine.reading_from_stress(true_yield + (true_visc * (self.machine.get_shear_rate(600)/300.0)))
         r300 = self.machine.reading_from_stress(true_yield + (true_visc * (self.machine.get_shear_rate(300)/300.0)))
         
@@ -96,7 +100,7 @@ class EconomicsAnalyzer:
         return t_days, t_cost, (self.rig_rate * t_days)
 
 # =============================================================================
-# 2. SRE EQUIPMENT LOGIC
+# 2. SRE EQUIPMENT LOGIC & CONSTANTS
 # =============================================================================
 SRE_TYPES = {
     "No Solid Control (Bypass)": {"lgs_multiplier": 2.5, "base_cost": 0.0},
@@ -118,20 +122,22 @@ def generate_dynamic_log(start_d, end_d, pp_base, fg_base, rop_base):
 # =============================================================================
 # 3. STREAMLIT WEB APP FRONT-END 
 # =============================================================================
-st.set_page_config(page_title="Ultimate Drilling Simulator", layout="wide", page_icon="🛢️")
+st.set_page_config(page_title="Drilling & Solid Control Simulator", layout="wide")
 
-st.title("🛢️ First-Principles Drilling Simulator")
-st.markdown("Powered by Krieger-Dougherty fluid mechanics and virtual Fann 35 viscometer physics. LGS is dynamically generated based on ROP and Flow Rate (GPM).")
+st.title("First-Principles Drilling Simulator")
+st.markdown("Dynamic evaluation of Solid Removal Efficiency (SRE), Dilution Requirements, and Mud Rheology.")
 
-# --- SIDEBAR ---
-st.sidebar.header("⚙️ Main Configuration")
+# --- SIDEBAR CONFIGURATION ---
+st.sidebar.header("Main Configuration")
 
-with st.sidebar.expander("🌍 Base Rig & Fluid Parameters", expanded=True):
+with st.sidebar.expander("Base Rig & Fluid Parameters", expanded=True):
     rig_rate = st.number_input("Rig Lease Rate (USD/Day)", value=35000.0, step=1000.0, format="%.2f")
     base_pv = st.number_input("Base Mud PV (cP)", value=14.0, step=0.5, format="%.2f")
     base_yp = st.number_input("Base Mud YP (lb/100ft2)", value=10.0, step=0.5, format="%.2f")
+    target_lgs_des = st.number_input("Target LGS after Dilution (%)", value=6.0, step=0.5, format="%.2f")
+    circulating_volume = st.number_input("Total Circulating Volume (bbls)", value=2000.0, step=100.0)
 
-with st.sidebar.expander("📐 Well Trajectory & Hydraulics", expanded=False):
+with st.sidebar.expander("Well Trajectory & Hydraulics", expanded=False):
     st.markdown("*Surface Section (17.5\")*")
     len_sec1 = st.number_input("Length (ft) - Sec 1", value=1250.0, step=100.0)
     gpm1 = st.number_input("GPM - Sec 1", value=1050.0, step=50.0)
@@ -144,34 +150,26 @@ with st.sidebar.expander("📐 Well Trajectory & Hydraulics", expanded=False):
     len_sec3 = st.number_input("Length (ft) - Sec 3", value=3350.0, step=100.0)
     gpm3 = st.number_input("GPM - Sec 3", value=450.0, step=50.0)
 
-with st.sidebar.expander("🔴 Well A Configuration (Old System)", expanded=False):
-    sre_A = st.selectbox("SRE Type (Well A)", list(SRE_TYPES.keys()), index=1)
-    wa1 = st.number_input("Sec 1 Dilution (Well A)", value=1800.0, step=100.0)
-    wa2 = st.number_input("Sec 2 Dilution (Well A)", value=3200.0, step=100.0)
-    wa3 = st.number_input("Sec 3 Dilution (Well A)", value=2100.0, step=100.0)
+with st.sidebar.expander("Solid Control Configuration", expanded=True):
+    sre_A = st.selectbox("SRE Type (Well A - Old System)", list(SRE_TYPES.keys()), index=1)
+    sre_B = st.selectbox("SRE Type (Well B - New System)", list(SRE_TYPES.keys()), index=3)
 
-with st.sidebar.expander("🔵 Well B Configuration (New System)", expanded=False):
-    sre_B = st.selectbox("SRE Type (Well B)", list(SRE_TYPES.keys()), index=3)
-    wb1 = st.number_input("Sec 1 Dilution (Well B)", value=800.0, step=100.0)
-    wb2 = st.number_input("Sec 2 Dilution (Well B)", value=1400.0, step=100.0)
-    wb3 = st.number_input("Sec 3 Dilution (Well B)", value=900.0, step=100.0)
-
-# --- ENGINE EXECUTION ---
-if st.sidebar.button("🚀 RUN PHYSICS SIMULATION", type="primary", use_container_width=True):
-    with st.spinner("Processing cuttings generation and Krieger-Dougherty fluid mechanics..."):
+# --- EXECUTION ENGINE ---
+if st.sidebar.button("Run Physics Simulation", type="primary", use_container_width=True):
+    with st.spinner("Processing cuttings generation, dilution kinetics, and rheology..."):
         
         d1 = len_sec1; d2 = d1 + len_sec2; d3 = d2 + len_sec3
         
         scenarios = {
             "Well A (Old System)": { "daily_eq_cost": SRE_TYPES[sre_A]["base_cost"], "sections": [
-                {"hole": 17.5, "dp": 5.0, "len": len_sec1, "wash": 1.15, "gpm": gpm1, "wat_add": wa1, "log": generate_dynamic_log(0, d1, 8.6, 11.5, 90)},
-                {"hole": 12.25, "dp": 5.0, "len": len_sec2, "wash": 1.10, "gpm": gpm2, "wat_add": wa2, "log": generate_dynamic_log(d1, d2, 9.2, 12.8, 65)},
-                {"hole": 8.5, "dp": 4.0, "len": len_sec3, "wash": 1.05, "gpm": gpm3, "wat_add": wa3, "log": generate_dynamic_log(d2, d3, 10.4, 14.8, 45)}
+                {"hole": 17.5, "dp": 5.0, "len": len_sec1, "gpm": gpm1, "log": generate_dynamic_log(0, d1, 8.6, 11.5, 90)},
+                {"hole": 12.25, "dp": 5.0, "len": len_sec2, "gpm": gpm2, "log": generate_dynamic_log(d1, d2, 9.2, 12.8, 65)},
+                {"hole": 8.5, "dp": 4.0, "len": len_sec3, "gpm": gpm3, "log": generate_dynamic_log(d2, d3, 10.4, 14.8, 45)}
             ]},
             "Well B (New System)": { "daily_eq_cost": SRE_TYPES[sre_B]["base_cost"], "sections": [
-                {"hole": 17.5, "dp": 5.0, "len": len_sec1, "wash": 1.15, "gpm": gpm1, "wat_add": wb1, "log": generate_dynamic_log(0, d1, 8.6, 11.5, 90)},
-                {"hole": 12.25, "dp": 5.0, "len": len_sec2, "wash": 1.10, "gpm": gpm2, "wat_add": wb2, "log": generate_dynamic_log(d1, d2, 9.2, 12.8, 65)},
-                {"hole": 8.5, "dp": 4.0, "len": len_sec3, "wash": 1.05, "gpm": gpm3, "wat_add": wb3, "log": generate_dynamic_log(d2, d3, 10.4, 14.8, 45)}
+                {"hole": 17.5, "dp": 5.0, "len": len_sec1, "gpm": gpm1, "log": generate_dynamic_log(0, d1, 8.6, 11.5, 90)},
+                {"hole": 12.25, "dp": 5.0, "len": len_sec2, "gpm": gpm2, "log": generate_dynamic_log(d1, d2, 9.2, 12.8, 65)},
+                {"hole": 8.5, "dp": 4.0, "len": len_sec3, "gpm": gpm3, "log": generate_dynamic_log(d2, d3, 10.4, 14.8, 45)}
             ]}
         }
         
@@ -179,16 +177,16 @@ if st.sidebar.button("🚀 RUN PHYSICS SIMULATION", type="primary", use_containe
         econ = EconomicsAnalyzer(rig_rate)
         sc_ana = SolidControlAnalyzer()
         
-        sim_res = {k: {"depth":[],"rop":[],"ecd":[],"pp":[],"fg":[],"lgs":[],"pv":[],"yp":[],"r600":[],"r300":[], "cost":0,"days":0,"equip_invest":0, "mud_cost":0, "rig_cost":0} for k in scenarios}
+        sim_res = {k: {"depth":[],"rop":[],"ecd":[],"pp":[],"fg":[],"lgs":[],"pv":[],"yp":[],"r600":[],"r300":[], 
+                       "cost":0,"days":0,"equip_invest":0, "mud_cost":0, "rig_cost":0, "dilution_vol":0, "sre_avg":0} for k in scenarios}
 
         for sc_name, sc_data in scenarios.items():
-            t_cost = 0; t_days = 0; t_invest = 0; t_mud = 0; t_rig = 0
+            t_cost = 0; t_days = 0; t_invest = 0; t_mud = 0; t_rig = 0; t_dilution = 0; t_sre = 0
             sre_mult = SRE_TYPES[sre_A if "Old" in sc_name else sre_B]["lgs_multiplier"]
             
             for sec in sc_data["sections"]:
                 avg_rop = 0; lgs_sum = 0
                 for d, mw, pp, fg, rop_max in sec['log']:
-                    # PHYSICS CORE LOOP
                     temp = engine.get_temp_at_depth(d)
                     lgs = engine.calculate_generated_lgs(sec['hole'], rop_max, sec['gpm'], sre_mult)
                     pv, yp, r600, r300 = engine.calculate_rheology(lgs, temp)
@@ -199,59 +197,72 @@ if st.sidebar.button("🚀 RUN PHYSICS SIMULATION", type="primary", use_containe
                     sim_res[sc_name]["pv"].append(pv); sim_res[sc_name]["yp"].append(yp); sim_res[sc_name]["r600"].append(r600); sim_res[sc_name]["r300"].append(r300)
                     avg_rop += rop; lgs_sum += lgs
                 
-                # SRE Dilution based on dynamic generated LGS
                 sec_avg_lgs = lgs_sum / len(sec['log'])
-                _, mud_cost = sc_ana.calculate_sre(sec['hole'], sec['len'], sec['wash'], sec['wat_add'], sec_avg_lgs)
+                sec_vd, sec_sre, sec_mud_cost = sc_ana.calculate_dilution_and_sre(sec_avg_lgs, target_lgs_des, circulating_volume)
                 
-                days, cost, rig_c = econ.calculate_cost(avg_rop/len(sec['log']), sec['len'], sec_avg_lgs, mud_cost, sc_data["daily_eq_cost"])
-                t_days += days; t_cost += cost; t_invest += (sc_data["daily_eq_cost"] * days); t_mud += mud_cost; t_rig += rig_c
+                days, cost, rig_c = econ.calculate_cost(avg_rop/len(sec['log']), sec['len'], sec_avg_lgs, sec_mud_cost, sc_data["daily_eq_cost"])
                 
-            sim_res[sc_name].update({"cost": t_cost, "days": t_days, "equip_invest": t_invest, "mud_cost": t_mud, "rig_cost": t_rig})
+                t_days += days; t_cost += cost; t_invest += (sc_data["daily_eq_cost"] * days)
+                t_mud += sec_mud_cost; t_rig += rig_c; t_dilution += sec_vd; t_sre += sec_sre
+                
+            sim_res[sc_name].update({"cost": t_cost, "days": t_days, "equip_invest": t_invest, "mud_cost": t_mud, "rig_cost": t_rig, "dilution_vol": t_dilution, "sre_avg": t_sre / len(sc_data["sections"])})
 
         # --- DASHBOARD RENDERING ---
         old = sim_res["Well A (Old System)"]; new = sim_res["Well B (New System)"]
         net_save = old["cost"] - new["cost"]; time_save = old["days"] - new["days"]
         roi = (net_save / new["equip_invest"]) * 100 if new["equip_invest"] > 0 else 0
         
-        tab1, tab2, tab3 = st.tabs(["📊 Visual Dashboard", "💰 Financial Report", "🔬 Real-Time Fann 35 Report"])
+        tab1, tab2, tab3 = st.tabs(["Interactive Dashboard", "Financial & Dilution Report", "Rheology Report"])
         
         with tab1:
-            st.subheader(f"Comparison: [{sre_A}]  vs  [{sre_B}]")
+            st.subheader("Performance Comparison")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Well A Total Cost", f"${old['cost']:,.0f}")
             c2.metric("Well B Total Cost", f"${new['cost']:,.0f}", f"{net_save:,.0f} Saved", delta_color="inverse")
             c3.metric("Well B Drilling Time", f"{new['days']:.1f} Days", f"{time_save:.1f} Days Faster", delta_color="inverse")
             c4.metric("ROI (SRE Upgrade)", f"{roi:,.0f} %")
             
-            fig, axs = plt.subplots(2, 3, figsize=(18, 12))
-            fig.suptitle(f'TRUE PHYSICS DRILLING PERFORMANCE: TD {d3:,.0f} ft', fontsize=20, fontweight='bold', y=0.98)
-            d_old, d_new = old["depth"], new["depth"]; max_d = max(d_old) + 500
-            s_old = {'color':'#e74c3c','marker':'o','lw':2.5,'label':'Well A'}
-            s_new = {'color':'#3498db','marker':'o','lw':2.5,'label':'Well B'}
+            # PLOTLY INTERACTIVE CHARTS
+            fig = make_subplots(
+                rows=2, cols=3, 
+                subplot_titles=('Drilling Speed (ft/hr)', 'Hydraulics (ppg)', 'Total Cost (USD)', 
+                                'Solid Accumulation (%)', 'Plastic Viscosity (cP)', 'Yield Point (lb/100ft2)'),
+                horizontal_spacing=0.08, vertical_spacing=0.15
+            )
 
-            axs[0,0].plot(old["rop"], d_old, **s_old); axs[0,0].plot(new["rop"], d_new, **s_new); axs[0,0].set(ylim=(max_d, 0), title='ROP (ft/hr)'); axs[0,0].grid(True, ls='--'); axs[0,0].legend()
-            axs[0,1].plot(old["ecd"], d_old, **s_old); axs[0,1].plot(new["ecd"], d_new, **s_new); axs[0,1].plot(new["pp"], d_old, 'k--', label='Pore Pressure'); axs[0,1].plot(new["fg"], d_old, 'k-', label='Frac Gradient'); axs[0,1].fill_betweenx(d_old, new["pp"], new["fg"], color='#2ecc71', alpha=0.1); axs[0,1].set(ylim=(max_d, 0), xlim=(8, 15), title='Mud Window (ppg)'); axs[0,1].grid(True, ls='--'); axs[0,1].legend()
+            # Helper function for adding traces
+            def add_trace_pair(fig, x_old, x_new, y_depth, row, col, name_old="Well A", name_new="Well B", show_leg=False):
+                fig.add_trace(go.Scatter(x=x_old, y=y_depth, name=name_old, line=dict(color='#e74c3c', width=2.5), mode='lines+markers', showlegend=show_leg), row=row, col=col)
+                fig.add_trace(go.Scatter(x=x_new, y=y_depth, name=name_new, line=dict(color='#3498db', width=2.5), mode='lines+markers', showlegend=show_leg), row=row, col=col)
+                fig.update_yaxes(autorange="reversed", row=row, col=col)
+
+            add_trace_pair(fig, old["rop"], new["rop"], old["depth"], 1, 1, show_leg=True)
             
-            bars = axs[0,2].bar(['Well A', 'Well B'], [old["cost"]/1e6, new["cost"]/1e6], color=['#e74c3c','#3498db']); axs[0,2].set(title='Total Cost (Million USD)'); 
-            for b in bars: axs[0,2].text(b.get_x() + b.get_width()/2, b.get_height(), f'${b.get_height():.2f}M', ha='center', va='bottom', fontweight='bold')
+            add_trace_pair(fig, old["ecd"], new["ecd"], old["depth"], 1, 2)
+            fig.add_trace(go.Scatter(x=new["pp"], y=new["depth"], name='Pore Pressure', line=dict(color='black', dash='dash')), row=1, col=2)
+            fig.add_trace(go.Scatter(x=new["fg"], y=new["depth"], name='Frac Gradient', line=dict(color='black')), row=1, col=2)
+            
+            fig.add_trace(go.Bar(x=['Well A', 'Well B'], y=[old["cost"], new["cost"]], marker_color=['#e74c3c', '#3498db'], text=[f'${old["cost"]/1e6:.2f}M', f'${new["cost"]/1e6:.2f}M'], textposition='auto'), row=1, col=3)
+            
+            add_trace_pair(fig, old["lgs"], new["lgs"], old["depth"], 2, 1)
+            fig.add_vline(x=target_lgs_des, line_dash="dash", line_color="black", annotation_text="Target LGS", row=2, col=1)
+            
+            add_trace_pair(fig, old["pv"], new["pv"], old["depth"], 2, 2)
+            add_trace_pair(fig, old["yp"], new["yp"], old["depth"], 2, 3)
 
-            axs[1,0].plot(old["lgs"], d_old, **s_old); axs[1,0].plot(new["lgs"], d_new, **s_new); axs[1,0].set(ylim=(max_d, 0), xlim=(0, max(max(old["lgs"])+5, 15)), title='Generated Cuttings (LGS %)'); axs[1,0].grid(True, ls='--'); axs[1,0].legend()
-            axs[1,1].plot(old["pv"], d_old, **s_old); axs[1,1].plot(new["pv"], d_new, **s_new); axs[1,1].set(ylim=(max_d, 0), title='Plastic Viscosity (cP)'); axs[1,1].grid(True, ls='--')
-            axs[1,2].plot(old["yp"], d_old, **s_old); axs[1,2].plot(new["yp"], d_new, **s_new); axs[1,2].set(ylim=(max_d, 0), title='Yield Point (lb/100ft2)'); axs[1,2].grid(True, ls='--')
-
-            plt.tight_layout(rect=[0, 0.03, 1, 0.96]); st.pyplot(fig)
+            fig.update_layout(height=700, hovermode="y unified", margin=dict(t=50, l=20, r=20, b=20))
+            st.plotly_chart(fig, use_container_width=True)
 
         with tab2:
-            st.subheader("Dynamic Authorization for Expenditure (AFE)")
+            st.subheader("Dynamic Authorization for Expenditure (AFE) & Dilution Kinetics")
             st.table({
-                "Cost Component": ["Total Operating Days", "Rig Lease Cost", "Mud & Chemical Cost", "SRE Equipment Investment", "TOTAL WELL COST"],
-                "Well A (Old System)": [f"{old['days']:.1f}", f"${old['rig_cost']:,.0f}", f"${old['mud_cost']:,.0f}", f"${old['equip_invest']:,.0f}", f"${old['cost']:,.0f}"],
-                "Well B (New System)": [f"{new['days']:.1f}", f"${new['rig_cost']:,.0f}", f"${new['mud_cost']:,.0f}", f"${new['equip_invest']:,.0f}", f"${new['cost']:,.0f}"]
+                "Component": ["Total Operating Days", "Average SRE (%)", "Total Dilution Volume (bbls)", "Rig Lease Cost (USD)", "Mud Dilution Cost (USD)", "SRE CAPEX (USD)", "TOTAL WELL COST (USD)"],
+                "Well A (Old System)": [f"{old['days']:.1f}", f"{old['sre_avg']:.1f}%", f"{old['dilution_vol']:,.0f}", f"${old['rig_cost']:,.0f}", f"${old['mud_cost']:,.0f}", f"${old['equip_invest']:,.0f}", f"${old['cost']:,.0f}"],
+                "Well B (New System)": [f"{new['days']:.1f}", f"{new['sre_avg']:.1f}%", f"{new['dilution_vol']:,.0f}", f"${new['rig_cost']:,.0f}", f"${new['mud_cost']:,.0f}", f"${new['equip_invest']:,.0f}", f"${new['cost']:,.0f}"]
             })
 
         with tab3:
-            st.subheader(f"Mud Rheology & Fann 35 Viscometer Dial Reading (at TD: {d3:,.0f} ft)")
-            st.markdown("*Dial readings are generated via simulation of Krieger-Dougherty fluid mechanics converted into True Shear Stress components.*")
+            st.subheader(f"Mud Rheology & Fann 35 Viscometer Data (at TD: {d3:,.0f} ft)")
             lgs_old = old["lgs"][-1]; pv_old = old["pv"][-1]; yp_old = old["yp"][-1]; r600_old = old["r600"][-1]; r300_old = old["r300"][-1]
             lgs_new = new["lgs"][-1]; pv_new = new["pv"][-1]; yp_new = new["yp"][-1]; r600_new = new["r600"][-1]; r300_new = new["r300"][-1]
             
@@ -262,4 +273,4 @@ if st.sidebar.button("🚀 RUN PHYSICS SIMULATION", type="primary", use_containe
             }
             st.table(rheo_data)
 else:
-    st.info("👈 Set drilling parameters (GPM, ROP) in the sidebar to simulate generated LGS, then click 'RUN PHYSICS SIMULATION'!")
+    st.info("Set the drilling parameters in the sidebar to simulate generated LGS, then click 'Run Physics Simulation'.")
