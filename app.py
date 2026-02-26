@@ -352,4 +352,6 @@ if st.sidebar.button("Run Physics & Mass Balance", type="primary", use_container
         with tab3:
             st.subheader(f"Mud Rheology & Fann 35 Viscometer Data (at TD: {d3:,.0f} ft)")
             st.markdown("*Dial readings represent Krieger-Dougherty fluid mechanics converted into True Shear Stress components at total depth.*")
-            rheo_data = {"Parameter": ["Actual Generated LGS (%)", "Plastic Viscosity (cP)", "Yield Point (lb/100ft2)", "Dial Reading 300 RPM", "Dial Reading 600 RPM"]}
+            
+            # Perbaikan: Menginisialisasi list yang benar untuk tabel
+            rheo_data = {"Parameter": ["Actual Generated LGS (%)", "Plastic Viscosity 
