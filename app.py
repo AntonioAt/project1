@@ -5,20 +5,56 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # =============================================================================
-# 1. ADVANCED PHYSICS MODULES 
+# 1. ADVANCED PHYSICS MODULES (API MASS BALANCE & RHEOLOGY)
 # =============================================================================
-class SolidControlAnalyzer:
-    def __init__(self, mud_price_bbl=75.0):
+class API_MassBalanceAnalyzer:
+    def __init__(self, mud_price_bbl=75.0, disposal_price_bbl=15.0):
         self.mud_price = mud_price_bbl
+        self.disposal_price = disposal_price_bbl
+        self.liquid_on_cuttings_ratio = 1.0  # (Y parameter) 1 bbl liquid per 1 bbl rock
 
-    def calculate_dilution_and_sre(self, lgs_in, target_lgs, circ_vol_bbl):
-        if lgs_in <= target_lgs:
-            return 0.0, 100.0, 0.0
-        v_d = circ_vol_bbl * ((lgs_in - target_lgs) / target_lgs)
-        sre = (1.0 - (v_d / circ_vol_bbl)) * 100.0
-        sre = max(0.0, min(sre, 100.0))
-        mud_cost = v_d * self.mud_price
-        return v_d, sre, mud_cost
+    def calculate_interval(self, hole_in, length_ft, washout, mech_sre_X, target_lgs_frac):
+        # Eq 2: Volume of drilled solids (Vc)
+        v_c = 0.000971 * (hole_in**2) * length_ft * washout
+        
+        # Hole volume created (Vh)
+        v_h = v_c  # Assuming volume of rock removed equals hole volume created
+        
+        # Eq 11: Wet solids volume to be disposed (Vsw)
+        v_sw = mech_sre_X * v_c * (1.0 + self.liquid_on_cuttings_ratio)
+        mud_lost_on_cuttings = mech_sre_X * v_c * self.liquid_on_cuttings_ratio
+        
+        # Solids retained in the active system
+        v_c_retained = v_c * (1.0 - mech_sre_X)
+        
+        # 1. Minimum Mud Built required to fill hole and replace losses (Volume Building)
+        v_m_volumetric = v_h + mud_lost_on_cuttings
+        
+        # 2. Mud Built required to maintain target LGS (Dilution Requirement)
+        if target_lgs_frac > 0:
+            v_m_dilution = v_c_retained / target_lgs_frac
+        else:
+            v_m_dilution = v_m_volumetric
+            
+        # Actual Mud Built (Vm) is the maximum of the two requirements
+        v_m_actual = max(v_m_volumetric, v_m_dilution)
+        
+        # Liquid Waste (Vlw) occurs if dilution volume exceeds hole filling needs
+        v_lw = max(0.0, v_m_actual - v_m_volumetric)
+        
+        # Eq 3: Dilution volume required if NO solid is removed (Vd theoretical)
+        v_d_theoretical = v_c / target_lgs_frac if target_lgs_frac > 0 else 0
+        
+        # Eq 4 & 5: Total Efficiency of Solid System (Et)
+        df = v_m_actual / v_d_theoretical if v_d_theoretical > 0 else 1.0
+        e_t = (1.0 - df) * 100.0
+        e_t = max(0.0, min(e_t, 100.0))
+        
+        # Costs
+        cost_mud = v_m_actual * self.mud_price
+        cost_disposal = (v_sw + v_lw) * self.disposal_price
+        
+        return v_m_actual, v_sw, v_lw, e_t, cost_mud, cost_disposal
 
 class Fann35Machine:
     def __init__(self):
@@ -37,17 +73,6 @@ class AdvancedDrillingPhysics:
 
     def get_temp_at_depth(self, tvd_ft):
         return self.surface_temp + (self.geo_gradient * (tvd_ft / 100.0))
-
-    def calculate_generated_lgs(self, hole_diam_in, rop_fph, gpm, sre_multiplier):
-        hole_cap = (hole_diam_in ** 2) / 1029.4
-        cuttings_bbl_hr = hole_cap * rop_fph
-        mud_bbl_hr = (gpm * 60) / 42.0
-        transport_efficiency = 0.8
-        lgs_concentration = (cuttings_bbl_hr / (mud_bbl_hr * transport_efficiency)) * 100.0
-        
-        background_lgs = 3.0
-        total_lgs = (lgs_concentration + background_lgs) * sre_multiplier
-        return min(total_lgs, 25.0) 
 
     def calculate_actual_density(self, base_mw, lgs_pct):
         lgs_sg_ppg = 21.7
@@ -87,11 +112,12 @@ class AdvancedDrillingPhysics:
 class EconomicsAnalyzer:
     def __init__(self, rig_rate, bit_cost=25000.0):
         self.rig_rate = rig_rate; self.bit_cost = bit_cost
-    def calculate_cost(self, avg_rop, length_ft, avg_lgs, mud_cost, daily_equip_cost):
+    def calculate_time_cost(self, avg_rop, length_ft, avg_lgs, daily_equip_cost, chem_penalty_daily):
         d_hrs = (length_ft / avg_rop) if avg_rop > 0 else 9999.0
+        # Time penalty for poor LGS control
         t_days = (d_hrs + (length_ft / 1000.0) + (10.0 if avg_lgs > 8.0 else 0)) / 24.0
-        t_cost = (self.rig_rate * t_days) + self.bit_cost + mud_cost + (daily_equip_cost * t_days)
-        return t_days, t_cost, (self.rig_rate * t_days)
+        t_cost = (self.rig_rate * t_days) + self.bit_cost + (daily_equip_cost * t_days) + (chem_penalty_daily * t_days)
+        return t_days, t_cost, (self.rig_rate * t_days), (chem_penalty_daily * t_days)
 
 def generate_dynamic_log(start_d, end_d, pp_base, fg_base, rop_base):
     log = []
@@ -106,47 +132,56 @@ def generate_dynamic_log(start_d, end_d, pp_base, fg_base, rop_base):
 # =============================================================================
 # 2. MODULAR EQUIPMENT CATALOG
 # =============================================================================
+# Mech_Efficiency: % of particles removed (X in API formula)
+# Chem_Penalty: Daily cost of replacing Barite/Polymers thrown away by the unit
 EQUIPMENT_CATALOG = {
-    "Shale Shaker": {"pass_factor": 0.50, "cost": 500.0},
-    "Desander": {"pass_factor": 0.80, "cost": 300.0},
-    "Desilter": {"pass_factor": 0.80, "cost": 400.0},
-    "Mud Cleaner": {"pass_factor": 0.70, "cost": 800.0},
-    "Centrifuge": {"pass_factor": 0.40, "cost": 1500.0}
+    "Shale Shaker": {"mech_efficiency": 0.45, "cost": 500.0, "chem_penalty": 0.0},
+    "Desander": {"mech_efficiency": 0.15, "cost": 300.0, "chem_penalty": 200.0},
+    "Desilter": {"mech_efficiency": 0.20, "cost": 400.0, "chem_penalty": 300.0},
+    "Mud Cleaner": {"mech_efficiency": 0.30, "cost": 800.0, "chem_penalty": 150.0},
+    "Centrifuge": {"mech_efficiency": 0.60, "cost": 1500.0, "chem_penalty": 1200.0}
 }
 
-def calculate_modular_sre(selected_equipments):
+def calculate_modular_system(selected_equipments):
     if not selected_equipments:
-        return 2.5, 0.0 # No equipment: high bypass factor, 0 cost
+        return 0.0, 0.0, 0.0 # X=0 (no separation), Cost=0
     
-    total_multiplier = 2.5
+    pass_factor = 1.0
     total_cost = 0.0
-    for eq in selected_equipments:
-        total_multiplier *= EQUIPMENT_CATALOG[eq]["pass_factor"]
-        total_cost += EQUIPMENT_CATALOG[eq]["cost"]
+    total_chem_penalty = 0.0
     
-    return total_multiplier, total_cost
+    for eq in selected_equipments:
+        # Probabilistic sequential removal: If Shaker removes 45%, 55% passes to next unit.
+        eff = EQUIPMENT_CATALOG[eq]["mech_efficiency"]
+        pass_factor *= (1.0 - eff)
+        total_cost += EQUIPMENT_CATALOG[eq]["cost"]
+        total_chem_penalty += EQUIPMENT_CATALOG[eq]["chem_penalty"]
+        
+    system_efficiency_X = 1.0 - pass_factor
+    return system_efficiency_X, total_cost, total_chem_penalty
 
 # =============================================================================
-# 3. STREAMLIT WEB APP FRONT-END (DYNAMIC SCENARIOS)
+# 3. STREAMLIT WEB APP FRONT-END 
 # =============================================================================
-st.set_page_config(page_title="Drilling & Solid Control Simulator", layout="wide")
+st.set_page_config(page_title="Advanced API Drilling Simulator", layout="wide")
 
-# Initialize Dynamic Scenarios in Session State
 if "num_scenarios" not in st.session_state:
     st.session_state.num_scenarios = 2
 
-st.title("First-Principles Drilling Simulator")
-st.markdown("Dynamic scenario modeling of Modular Solid Control Equipment, Dilution Kinetics, and Rheology.")
+st.title("API Mass-Balance Drilling Simulator")
+st.markdown("Engineering-grade evaluation using API volumetric mass balance, dynamic modular SRE, and Barite loss penalties.")
 
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("Global Configurations")
 
-with st.sidebar.expander("Base Rig & Fluid Parameters", expanded=False):
-    rig_rate = st.number_input("Rig Lease Rate (USD/Day)", value=35000.0, step=1000.0, format="%.2f")
-    base_pv = st.number_input("Base Mud PV (cP)", value=14.0, step=0.5, format="%.2f")
-    base_yp = st.number_input("Base Mud YP (lb/100ft2)", value=10.0, step=0.5, format="%.2f")
-    target_lgs_des = st.number_input("Target LGS after Dilution (%)", value=6.0, step=0.5, format="%.2f")
-    circulating_volume = st.number_input("Total Circulating Volume (bbls)", value=2000.0, step=100.0)
+with st.sidebar.expander("Base Rig & Fluid Economics", expanded=False):
+    rig_rate = st.number_input("Rig Lease Rate ($/Day)", value=35000.0, step=1000.0)
+    mud_price = st.number_input("Fresh Mud Base Cost ($/bbl)", value=85.0, step=5.0)
+    disp_price = st.number_input("Waste Disposal Cost ($/bbl)", value=18.0, step=2.0)
+    base_pv = st.number_input("Base Mud PV (cP)", value=14.0, step=0.5)
+    base_yp = st.number_input("Base Mud YP (lb/100ft2)", value=10.0, step=0.5)
+    target_lgs_des = st.number_input("Target LGS (ks fraction)", value=0.06, step=0.01, format="%.2f")
+    st.caption("Total circulating volume is now dynamically built based on depth progression.")
 
 with st.sidebar.expander("Well Trajectory & Hydraulics", expanded=False):
     len_sec1 = st.number_input("Length (ft) - Sec 1 (17.5\")", value=1250.0, step=100.0)
@@ -157,47 +192,41 @@ with st.sidebar.expander("Well Trajectory & Hydraulics", expanded=False):
     gpm3 = st.number_input("GPM - Sec 3", value=450.0, step=50.0)
 
 st.sidebar.divider()
-st.sidebar.header("Scenario Builder")
+st.sidebar.header("Modular Scenario Builder")
 
-# Dynamic Scenario Management
 col1, col2 = st.sidebar.columns(2)
-if col1.button("➕ Add Scenario"):
-    st.session_state.num_scenarios += 1
-if col2.button("➖ Remove Scenario"):
-    if st.session_state.num_scenarios > 1:
-        st.session_state.num_scenarios -= 1
+if col1.button("➕ Add Scenario"): st.session_state.num_scenarios += 1
+if col2.button("➖ Remove Scenario"): 
+    if st.session_state.num_scenarios > 1: st.session_state.num_scenarios -= 1
 
-# Dictionary to hold user configurations
 scenario_configs = {}
 
 for i in range(st.session_state.num_scenarios):
-    sc_name = f"Scenario {chr(65+i)}" # Generates Scenario A, B, C...
-    with st.sidebar.expander(f"🛠️ {sc_name} Equipment", expanded=(i<2)):
+    sc_name = f"Scenario {chr(65+i)}" 
+    with st.sidebar.expander(f"🛠️ {sc_name} Equipment", expanded=True):
         selected_eq = st.multiselect(
-            "Select Solid Control Equipment", 
+            "Select Processing Units", 
             options=list(EQUIPMENT_CATALOG.keys()), 
             default=["Shale Shaker"] if i==0 else ["Shale Shaker", "Mud Cleaner", "Centrifuge"],
             key=f"eq_{i}"
         )
-        mult, cost = calculate_modular_sre(selected_eq)
-        st.caption(f"Daily Eq. Cost: ${cost:,.0f} | Extracted SRE Multiplier: {mult:.2f}")
-        scenario_configs[sc_name] = {"equipments": selected_eq, "multiplier": mult, "cost": cost}
+        eff_X, cost, chem_pen = calculate_modular_system(selected_eq)
+        st.caption(f"Mechanical SRE (X): {eff_X*100:.1f}%")
+        st.caption(f"Rental: ${cost:,.0f}/d | Chem Loss: ${chem_pen:,.0f}/d")
+        scenario_configs[sc_name] = {"equipments": selected_eq, "mech_X": eff_X, "cost": cost, "chem": chem_pen}
 
-# PLOTLY COLORS DEFINITION
 SCENARIO_COLORS = ['#e74c3c', '#3498db', '#2ecc71', '#f1c40f', '#9b59b6', '#e67e22', '#1abc9c']
 
 # --- EXECUTION ENGINE ---
-if st.sidebar.button("Run Physics Simulation", type="primary", use_container_width=True):
-    with st.spinner("Processing cuttings generation, modular SRE dynamics, and rheology..."):
+if st.sidebar.button("Run API Mass Balance Simulation", type="primary", use_container_width=True):
+    with st.spinner("Processing API equations, barite loss kinetics, and rheology..."):
         
         d1 = len_sec1; d2 = d1 + len_sec2; d3 = d2 + len_sec3
         
-        # Build scenario inputs dynamically
         scenarios = {}
         for sc_name, config in scenario_configs.items():
             scenarios[sc_name] = {
-                "daily_eq_cost": config["cost"],
-                "lgs_multiplier": config["multiplier"],
+                "daily_eq_cost": config["cost"], "chem_penalty": config["chem"], "mech_X": config["mech_X"],
                 "sections": [
                     {"hole": 17.5, "dp": 5.0, "len": len_sec1, "gpm": gpm1, "log": generate_dynamic_log(0, d1, 8.6, 11.5, 90)},
                     {"hole": 12.25, "dp": 5.0, "len": len_sec2, "gpm": gpm2, "log": generate_dynamic_log(d1, d2, 9.2, 12.8, 65)},
@@ -207,144 +236,122 @@ if st.sidebar.button("Run Physics Simulation", type="primary", use_container_wid
         
         engine = AdvancedDrillingPhysics(base_pv, base_yp)
         econ = EconomicsAnalyzer(rig_rate)
-        sc_ana = SolidControlAnalyzer()
+        mass_bal = API_MassBalanceAnalyzer(mud_price, disp_price)
         
-        sim_res = {k: {"depth":[],"hole":[], "rop":[],"ecd":[],"pp":[],"fg":[],"lgs":[],"base_mw":[],"actual_mw":[],"pv":[],"yp":[],"r600":[],"r300":[], 
-                       "cost":0,"days":0,"equip_invest":0, "mud_cost":0, "rig_cost":0, "dilution_vol":0, "sre_avg":0} for k in scenarios}
+        sim_res = {k: {"depth":[],"rop":[],"ecd":[],"actual_mw":[],"pv":[],"yp":[], 
+                       "cost":0,"days":0,"equip_invest":0, "mud_cost":0, "disp_cost":0, "chem_cost":0, 
+                       "total_vm":0, "total_waste":0, "api_et_avg":0} for k in scenarios}
 
         for sc_name, sc_data in scenarios.items():
-            t_cost = 0; t_days = 0; t_invest = 0; t_mud = 0; t_rig = 0; t_dilution = 0; t_sre = 0
-            sre_mult = sc_data["lgs_multiplier"]
+            t_cost = 0; t_days = 0; t_invest = 0; t_mud_c = 0; t_disp_c = 0; t_chem_c = 0
+            t_vm = 0; t_waste = 0; et_sum = 0
+            mech_X = sc_data["mech_X"]
             
             for sec in sc_data["sections"]:
-                avg_rop = 0; lgs_sum = 0
+                avg_rop = 0
+                
+                # 1. API Mass Balance per section
+                vm, vsw, vlw, api_et, c_mud, c_disp = mass_bal.calculate_interval(
+                    sec['hole'], sec['len'], 1.0, mech_X, target_lgs_des
+                )
+                
+                t_vm += vm; t_waste += (vsw + vlw); et_sum += api_et
+                t_mud_c += c_mud; t_disp_c += c_disp
+                
+                # 2. Physics Logging
+                sim_lgs_pct = target_lgs_des * 100.0 if vm > 0 else (1.0 - mech_X) * 15.0 # simplified steady state LGS
+                
                 for d, base_mw, pp, fg, rop_max in sec['log']:
                     temp = engine.get_temp_at_depth(d)
-                    
-                    lgs = engine.calculate_generated_lgs(sec['hole'], rop_max, sec['gpm'], sre_mult)
-                    actual_mw = engine.calculate_actual_density(base_mw, lgs)
-                    
-                    pv, yp, r600, r300 = engine.calculate_rheology(lgs, temp)
+                    actual_mw = engine.calculate_actual_density(base_mw, sim_lgs_pct)
+                    pv, yp, r600, r300 = engine.calculate_rheology(sim_lgs_pct, temp)
                     ecd, rop = engine.calculate_hydraulics(pv, yp, actual_mw, d, sec['hole'], sec['dp'], sec['gpm'], pp, rop_max)
                     
-                    sim_res[sc_name]["hole"].append(sec['hole']); sim_res[sc_name]["depth"].append(d)
-                    sim_res[sc_name]["rop"].append(rop); sim_res[sc_name]["ecd"].append(ecd)
-                    sim_res[sc_name]["pp"].append(pp); sim_res[sc_name]["fg"].append(fg)
-                    sim_res[sc_name]["lgs"].append(lgs); sim_res[sc_name]["base_mw"].append(base_mw); sim_res[sc_name]["actual_mw"].append(actual_mw)
-                    sim_res[sc_name]["pv"].append(pv); sim_res[sc_name]["yp"].append(yp)
-                    sim_res[sc_name]["r600"].append(r600); sim_res[sc_name]["r300"].append(r300)
-                    avg_rop += rop; lgs_sum += lgs
+                    sim_res[sc_name]["depth"].append(d); sim_res[sc_name]["rop"].append(rop); sim_res[sc_name]["ecd"].append(ecd)
+                    sim_res[sc_name]["actual_mw"].append(actual_mw); sim_res[sc_name]["pv"].append(pv); sim_res[sc_name]["yp"].append(yp)
+                    avg_rop += rop
                 
-                sec_avg_lgs = lgs_sum / len(sec['log'])
-                sec_vd, sec_sre, sec_mud_cost = sc_ana.calculate_dilution_and_sre(sec_avg_lgs, target_lgs_des, circulating_volume)
+                # 3. Time & Economics
+                days, base_cost, rig_c, chem_c = econ.calculate_time_cost(
+                    avg_rop/len(sec['log']), sec['len'], sim_lgs_pct, sc_data["daily_eq_cost"], sc_data["chem_penalty"]
+                )
                 
-                days, cost, rig_c = econ.calculate_cost(avg_rop/len(sec['log']), sec['len'], sec_avg_lgs, sec_mud_cost, sc_data["daily_eq_cost"])
+                t_days += days; t_invest += (sc_data["daily_eq_cost"] * days); t_chem_c += chem_c
+                t_cost += base_cost + c_mud + c_disp
                 
-                t_days += days; t_cost += cost; t_invest += (sc_data["daily_eq_cost"] * days)
-                t_mud += sec_mud_cost; t_rig += rig_c; t_dilution += sec_vd; t_sre += sec_sre
-                
-            sim_res[sc_name].update({"cost": t_cost, "days": t_days, "equip_invest": t_invest, "mud_cost": t_mud, "rig_cost": t_rig, "dilution_vol": t_dilution, "sre_avg": t_sre / len(sc_data["sections"])})
+            sim_res[sc_name].update({
+                "cost": t_cost, "days": t_days, "equip_invest": t_invest, 
+                "mud_cost": t_mud_c, "disp_cost": t_disp_c, "chem_cost": t_chem_c,
+                "total_vm": t_vm, "total_waste": t_waste, "api_et_avg": et_sum / len(sc_data["sections"])
+            })
 
         # --- DASHBOARD RENDERING ---
-        tab1, tab2, tab3 = st.tabs(["Interactive Dashboard", "Financial & Dilution Report", "Detailed Data Logs"])
+        tab1, tab2 = st.tabs(["Interactive Physics Dashboard", "API AFE & Mass Balance"])
         
         with tab1:
             st.subheader("Multi-Scenario Performance Comparison")
             
-            # PLOTLY INTERACTIVE CHARTS
             fig = make_subplots(
                 rows=2, cols=3, 
-                subplot_titles=('Drilling Speed (ft/hr)', 'Hydraulics & Actual MW (ppg)', 'Total Cost (USD)', 
-                                'Solid Accumulation (%)', 'Plastic Viscosity (cP)', 'Yield Point (lb/100ft2)'),
+                subplot_titles=('Drilling Speed (ft/hr)', 'Hydraulics & Actual MW (ppg)', 'Total Project Cost (USD)', 
+                                'API Total Efficiency (Et %)', 'Plastic Viscosity (cP)', 'Yield Point (lb/100ft2)'),
                 horizontal_spacing=0.08, vertical_spacing=0.15
             )
 
-            # Common background traces (PP and FG) using Scenario A's depth geometry
-            base_sc = list(sim_res.keys())[0]
-            fig.add_trace(go.Scatter(x=sim_res[base_sc]["pp"], y=sim_res[base_sc]["depth"], name='Pore Pressure', line=dict(color='black', dash='dash'), hovertemplate="%{x:.2f} ppg"), row=1, col=2)
-            fig.add_trace(go.Scatter(x=sim_res[base_sc]["fg"], y=sim_res[base_sc]["depth"], name='Frac Gradient', line=dict(color='black'), hovertemplate="%{x:.2f} ppg"), row=1, col=2)
-            fig.add_vline(x=target_lgs_des, line_dash="dash", line_color="black", line_width=2, annotation_text="Target LGS", row=2, col=1)
-
-            # Loop through all dynamic scenarios to plot
-            costs_x = []; costs_y = []; bar_colors = []; bar_texts = []
+            # Draw Cost Bar Chart (Col 3) and Efficiency Bar Chart (Col 4)
+            costs_x = []; costs_y = []; eff_y = []; bar_colors = []; bar_texts = []; eff_texts = []
             
             for idx, (sc_name, data) in enumerate(sim_res.items()):
                 c = SCENARIO_COLORS[idx % len(SCENARIO_COLORS)]
                 
-                # Plot ROP
-                fig.add_trace(go.Scatter(x=data["rop"], y=data["depth"], name=sc_name, line=dict(color=c, width=2.5), mode='lines+markers', hovertemplate="%{x:.2f} | Depth: %{y:.0f} ft"), row=1, col=1)
+                fig.add_trace(go.Scatter(x=data["rop"], y=data["depth"], name=sc_name, line=dict(color=c, width=2.5), mode='lines+markers', hovertemplate="%{x:.2f} ft/hr"), row=1, col=1)
                 
-                # Plot Hydraulics (ECD and Actual MW)
-                fig.add_trace(go.Scatter(x=data["ecd"], y=data["depth"], name=f"{sc_name} (ECD)", line=dict(color=c, width=2.5), mode='lines+markers', showlegend=False, hovertemplate="ECD: %{x:.2f} ppg"), row=1, col=2)
-                fig.add_trace(go.Scatter(x=data["actual_mw"], y=data["depth"], name=f"{sc_name} (MW)", line=dict(color=c, dash='dot', width=1.5), mode='lines', showlegend=False, hovertemplate="Actual MW: %{x:.2f} ppg"), row=1, col=2)
+                fig.add_trace(go.Scatter(x=data["ecd"], y=data["depth"], line=dict(color=c, width=2.5), mode='lines+markers', showlegend=False, hovertemplate="ECD: %{x:.2f} ppg"), row=1, col=2)
+                fig.add_trace(go.Scatter(x=data["actual_mw"], y=data["depth"], line=dict(color=c, dash='dot', width=1.5), mode='lines', showlegend=False), row=1, col=2)
                 
-                # Prepare Bar Chart Data
-                costs_x.append(sc_name)
-                costs_y.append(data["cost"])
-                bar_colors.append(c)
+                costs_x.append(sc_name); costs_y.append(data["cost"])
+                eff_y.append(data["api_et_avg"]); bar_colors.append(c)
                 bar_texts.append(f'${data["cost"]/1e6:.2f}M')
+                eff_texts.append(f'{data["api_et_avg"]:.1f}%')
 
-                # Plot LGS, PV, YP
-                fig.add_trace(go.Scatter(x=data["lgs"], y=data["depth"], line=dict(color=c, width=2.5), mode='lines+markers', showlegend=False, hovertemplate="%{x:.2f} %"), row=2, col=1)
-                fig.add_trace(go.Scatter(x=data["pv"], y=data["depth"], line=dict(color=c, width=2.5), mode='lines+markers', showlegend=False, hovertemplate="%{x:.1f} cP"), row=2, col=2)
-                fig.add_trace(go.Scatter(x=data["yp"], y=data["depth"], line=dict(color=c, width=2.5), mode='lines+markers', showlegend=False, hovertemplate="%{x:.1f} lb/100ft2"), row=2, col=3)
+                fig.add_trace(go.Scatter(x=data["pv"], y=data["depth"], line=dict(color=c, width=2.5), mode='lines+markers', showlegend=False), row=2, col=2)
+                fig.add_trace(go.Scatter(x=data["yp"], y=data["depth"], line=dict(color=c, width=2.5), mode='lines+markers', showlegend=False), row=2, col=3)
 
-                # Fix Y axes
                 fig.update_yaxes(autorange="reversed", row=1, col=1)
                 fig.update_yaxes(autorange="reversed", row=1, col=2)
-                fig.update_yaxes(autorange="reversed", row=2, col=1)
                 fig.update_yaxes(autorange="reversed", row=2, col=2)
                 fig.update_yaxes(autorange="reversed", row=2, col=3)
 
-            # Draw Dynamic Bar Chart
-            fig.add_trace(go.Bar(x=costs_x, y=costs_y, marker_color=bar_colors, text=bar_texts, textposition='auto', showlegend=False, hovertemplate="Cost: $%{y:,.0f}"), row=1, col=3)
+            fig.add_trace(go.Bar(x=costs_x, y=costs_y, marker_color=bar_colors, text=bar_texts, textposition='auto', showlegend=False), row=1, col=3)
+            fig.add_trace(go.Bar(x=costs_x, y=eff_y, marker_color=bar_colors, text=eff_texts, textposition='auto', showlegend=False), row=2, col=1)
 
-            fig.update_layout(
-                height=750, 
-                hovermode="y unified", 
-                margin=dict(t=50, l=20, r=20, b=20),
-                paper_bgcolor='white',
-                plot_bgcolor='white',
-                font=dict(color='black'),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
+            fig.update_layout(height=750, hovermode="y unified", margin=dict(t=50, l=20, r=20, b=20), paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'))
             fig.update_xaxes(showline=True, linewidth=1, linecolor='black', gridcolor='lightgrey')
             fig.update_yaxes(showline=True, linewidth=1, linecolor='black', gridcolor='lightgrey')
             st.plotly_chart(fig, use_container_width=True, theme=None)
 
         with tab2:
-            st.subheader("Multi-Scenario Economics & Dilution Report")
+            st.subheader("Mass Balance & AFE Economics (API Standard)")
             
             summary_data = {
-                "Metric": ["Equipment Selected", "Operating Days", "Avg SRE (%)", "Dilution Vol (bbls)", "Rig Lease ($)", "Mud Cost ($)", "SRE Capex ($)", "TOTAL COST ($)"]
+                "Metric": ["Equipment Selected", "Mud Built (Vm) bbls", "Waste Disposed (Vt) bbls", "API Efficiency (Et)", "1. Mud Cost ($)", "2. Disposal Cost ($)", "3. Barite/Chem Pen. ($)", "4. SRE Capex ($)", "TOTAL AFE COST ($)"]
             }
             
             for sc_name, data in sim_res.items():
                 eq_str = " + ".join(scenario_configs[sc_name]["equipments"]) if scenario_configs[sc_name]["equipments"] else "None (Bypass)"
                 summary_data[sc_name] = [
                     eq_str,
-                    f"{data['days']:.1f}", 
-                    f"{data['sre_avg']:.1f}%", 
-                    f"{data['dilution_vol']:,.0f}", 
-                    f"${data['rig_cost']:,.0f}", 
+                    f"{data['total_vm']:,.0f}", 
+                    f"{data['total_waste']:,.0f}", 
+                    f"{data['api_et_avg']:.1f}%", 
                     f"${data['mud_cost']:,.0f}", 
+                    f"${data['disp_cost']:,.0f}",
+                    f"${data['chem_cost']:,.0f}", 
                     f"${data['equip_invest']:,.0f}", 
                     f"${data['cost']:,.0f}"
                 ]
                 
             st.table(summary_data)
 
-        with tab3:
-            st.subheader("Comprehensive Data Logs")
-            
-            for sc_name, data in sim_res.items():
-                st.markdown(f"**{sc_name} Data**")
-                df = pd.DataFrame({
-                    "Depth (ft)": data["depth"], "Hole (\")": data["hole"], "Generated LGS (%)": data["lgs"],
-                    "Base MW (ppg)": data["base_mw"], "Actual MW (ppg)": data["actual_mw"], 
-                    "PV (cP)": data["pv"], "YP (lb/100ft2)": data["yp"], "Fann 600": data["r600"], "Fann 300": data["r300"]
-                })
-                st.dataframe(df, use_container_width=True, hide_index=True)
-
 else:
-    st.info("Configure your custom scenarios and equipment in the sidebar, then click 'Run Physics Simulation'.")
+    st.info("Configure your modular scenarios and equipment in the sidebar, then click 'Run API Mass Balance Simulation'.")
