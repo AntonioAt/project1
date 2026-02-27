@@ -14,11 +14,13 @@ class API_MassBalanceAnalyzer:
         self.liquid_on_cuttings_ratio = 1.0  # Faktor Y: 1 bbl liquid menempel per 1 bbl rock
 
     def calculate_interval(self, hole_in, length_ft, washout, mech_sre_X, target_lgs_frac):
-        # Volume of drilled solids (Vc)
+        # Eq 2: Volume drilled solids (Vc)
         v_c = 0.000971 * (hole_in**2) * length_ft * washout
-        v_h = v_c  # Volume of hole created
         
-        # Wet solids volume to be disposed (Vsw)
+        # Asumsi Vh (Hole Volume) sama dengan Vc
+        v_h = v_c  
+        
+        # Eq 11: Wet solids volume to be disposed (Vsw)
         v_sw = mech_sre_X * v_c * (1.0 + self.liquid_on_cuttings_ratio)
         mud_lost_on_cuttings = mech_sre_X * v_c * self.liquid_on_cuttings_ratio
         
@@ -37,13 +39,13 @@ class API_MassBalanceAnalyzer:
         # Liquid Waste (Vlw) terjadi jika kita dipaksa melarutkan melebihi kapasitas lubang
         v_lw = max(0.0, v_m_actual - v_m_volumetric)
         
-        # API Total Efficiency (Et)
+        # Eq 3 & 4: API Total Efficiency (Et)
         v_d_theoretical = v_c / target_lgs_frac if target_lgs_frac > 0 else 0
         df = v_m_actual / v_d_theoretical if v_d_theoretical > 0 else 1.0
         e_t = (1.0 - df) * 100.0
         e_t = max(0.0, min(e_t, 100.0))
         
-        # Kalkulasi Ekonomi
+        # Kalkulasi AFE
         cost_mud = v_m_actual * self.mud_price
         cost_disposal = (v_sw + v_lw) * self.disposal_price
         
@@ -68,6 +70,7 @@ class AdvancedDrillingPhysics:
         return self.surface_temp + (self.geo_gradient * (tvd_ft / 100.0))
 
     def calculate_generated_lgs(self, hole_diam_in, rop_fph, gpm, sre_multiplier):
+        # Physics mikro untuk grafik LGS di Annulus
         hole_cap = (hole_diam_in ** 2) / 1029.4
         cuttings_bbl_hr = hole_cap * rop_fph
         mud_bbl_hr = (gpm * 60) / 42.0
@@ -128,9 +131,15 @@ class EconomicsAnalyzer:
         t_cost = rig_c + self.bit_cost + eq_c + chem_c
         return t_days, t_cost, rig_c, chem_c
 
-def generate_dynamic_log(start_d, end_d, pp_base, fg_base, rop_base):
+def generate_dynamic_log(start_d, end_d, pp_base, fg_base, rop_base, step_ft=500):
     log = []
-    points = np.linspace(start_d + 100, end_d, 3) 
+    # Menggenerate titik kedalaman setiap 'step_ft' (default: tiap 500 ft) untuk simulasi harian DMR
+    points = np.arange(start_d + step_ft, end_d, step_ft)
+    
+    # Memastikan titik Total Depth (TD) pasti ikut terekam di akhir log jika tidak pas kelipatan 500
+    if len(points) == 0 or points[-1] != end_d:
+        points = np.append(points, end_d)
+        
     for d in points:
         base_mw = 9.0 + (d / 2000.0) 
         pp = pp_base + (d / 3000.0)
@@ -232,9 +241,9 @@ if st.sidebar.button("Run Physics & Mass Balance", type="primary", use_container
             scenarios[sc_name] = {
                 "daily_eq_cost": config["cost"], "chem_penalty": config["chem"], "mech_X": config["mech_X"],
                 "sections": [
-                    {"hole": 17.5, "dp": 5.0, "len": len_sec1, "gpm": gpm1, "wash": 1.15, "log": generate_dynamic_log(0, d1, 8.6, 11.5, 90)},
-                    {"hole": 12.25, "dp": 5.0, "len": len_sec2, "gpm": gpm2, "wash": 1.10, "log": generate_dynamic_log(d1, d2, 9.2, 12.8, 65)},
-                    {"hole": 8.5, "dp": 4.0, "len": len_sec3, "gpm": gpm3, "wash": 1.05, "log": generate_dynamic_log(d2, d3, 10.4, 14.8, 45)}
+                    {"hole": 17.5, "dp": 5.0, "len": len_sec1, "gpm": gpm1, "wash": 1.15, "log": generate_dynamic_log(0, d1, 8.6, 11.5, 90, step_ft=500)},
+                    {"hole": 12.25, "dp": 5.0, "len": len_sec2, "gpm": gpm2, "wash": 1.10, "log": generate_dynamic_log(d1, d2, 9.2, 12.8, 65, step_ft=500)},
+                    {"hole": 8.5, "dp": 4.0, "len": len_sec3, "gpm": gpm3, "wash": 1.05, "log": generate_dynamic_log(d2, d3, 10.4, 14.8, 45, step_ft=500)}
                 ]
             }
         
@@ -249,12 +258,12 @@ if st.sidebar.button("Run Physics & Mass Balance", type="primary", use_container
             t_cost = 0; t_days = 0; t_invest = 0; t_mud_c = 0; t_disp_c = 0; t_chem_c = 0
             t_vm = 0; t_waste = 0; et_sum = 0
             mech_X = sc_data["mech_X"]
-            sre_mult = 1.0 - mech_X  # Factor of LGS passing into annulus
+            sre_mult = 1.0 - mech_X  # Untuk grafik mikro LGS Annulus
             
             for sec in sc_data["sections"]:
                 avg_rop = 0; lgs_sum = 0
                 
-                # 1. API Macro Mass Balance (Volume & Economy) dynamically per section
+                # 1. API Macro Mass Balance (Volume & Economy)
                 vm, vsw, vlw, api_et, c_mud, c_disp = mass_bal.calculate_interval(sec['hole'], sec['len'], sec['wash'], mech_X, target_lgs_frac)
                 t_vm += vm; t_waste += (vsw + vlw); et_sum += api_et
                 t_mud_c += c_mud; t_disp_c += c_disp
@@ -291,7 +300,6 @@ if st.sidebar.button("Run Physics & Mass Balance", type="primary", use_container
             })
 
         # --- DASHBOARD RENDERING ---
-        # MENYEDIAKAN 4 TABS AGAR SELURUH DATA LENGKAP TERLIHAT
         tab1, tab2, tab3, tab4 = st.tabs(["Interactive Dashboard", "API Mass Balance & AFE", "Rheology Report (at TD)", "Detailed Data Logs"])
         
         with tab1:
@@ -316,13 +324,11 @@ if st.sidebar.button("Run Physics & Mass Balance", type="primary", use_container
                 
                 fig.add_trace(go.Scatter(x=data["rop"], y=data["depth"], name=sc_name, line=dict(color=c, width=2.5), mode='lines+markers', hovertemplate="%{x:.2f} | Depth: %{y:.0f} ft"), row=1, col=1)
                 
-                # Grafik Densitas & ECD dipertahankan sesuai request
                 fig.add_trace(go.Scatter(x=data["ecd"], y=data["depth"], name=f"{sc_name} (ECD)", line=dict(color=c, width=2.5), mode='lines+markers', showlegend=False, hovertemplate="ECD: %{x:.2f} ppg"), row=1, col=2)
                 fig.add_trace(go.Scatter(x=data["actual_mw"], y=data["depth"], name=f"{sc_name} (MW)", line=dict(color=c, dash='dot', width=1.5), mode='lines', showlegend=False, hovertemplate="Actual MW: %{x:.2f} ppg"), row=1, col=2)
                 
                 costs_x.append(sc_name); costs_y.append(data["cost"]); bar_colors.append(c); bar_texts.append(f'${data["cost"]/1e6:.2f}M')
 
-                # Grafik PV, YP, LGS dipertahankan
                 fig.add_trace(go.Scatter(x=data["lgs"], y=data["depth"], line=dict(color=c, width=2.5), mode='lines+markers', showlegend=False, hovertemplate="%{x:.2f} %"), row=2, col=1)
                 fig.add_trace(go.Scatter(x=data["pv"], y=data["depth"], line=dict(color=c, width=2.5), mode='lines+markers', showlegend=False, hovertemplate="%{x:.1f} cP"), row=2, col=2)
                 fig.add_trace(go.Scatter(x=data["yp"], y=data["depth"], line=dict(color=c, width=2.5), mode='lines+markers', showlegend=False, hovertemplate="%{x:.1f} lb/100ft2"), row=2, col=3)
@@ -342,51 +348,12 @@ if st.sidebar.button("Run Physics & Mass Balance", type="primary", use_container
 
         with tab2:
             st.subheader("Mass Balance & AFE Economics (API Standard)")
-            summary_data = {
-                "Metric": ["Equipment Selected", "Mud Built (Vm) bbls", "Waste Disposed (Vt) bbls", "API Efficiency (Et)", "1. Mud Cost ($)", "2. Disposal Cost ($)", "3. Barite/Chem Pen. ($)", "4. SRE Capex ($)", "TOTAL AFE COST ($)"]
-            }
+            summary_data = {"Metric": ["Equipment Selected", "Mud Built (Vm) bbls", "Waste Disposed (Vt) bbls", "API Efficiency (Et)", "1. Mud Cost ($)", "2. Disposal Cost ($)", "3. Barite/Chem Pen. ($)", "4. SRE Capex ($)", "TOTAL AFE COST ($)"]}
             for sc_name, data in sim_res.items():
                 eq_str = " + ".join(scenario_configs[sc_name]["equipments"]) if scenario_configs[sc_name]["equipments"] else "None (Bypass)"
-                summary_data[sc_name] = [
-                    eq_str, 
-                    f"{data['total_vm']:,.0f}", 
-                    f"{data['total_waste']:,.0f}", 
-                    f"{data['api_et_avg']:.1f}%", 
-                    f"${data['mud_cost']:,.0f}", 
-                    f"${data['disp_cost']:,.0f}", 
-                    f"${data['chem_cost']:,.0f}", 
-                    f"${data['equip_invest']:,.0f}", 
-                    f"${data['cost']:,.0f}"
-                ]
+                summary_data[sc_name] = [eq_str, f"{data['total_vm']:,.0f}", f"{data['total_waste']:,.0f}", f"{data['api_et_avg']:.1f}%", f"${data['mud_cost']:,.0f}", f"${data['disp_cost']:,.0f}", f"${data['chem_cost']:,.0f}", f"${data['equip_invest']:,.0f}", f"${data['cost']:,.0f}"]
             st.table(summary_data)
 
         with tab3:
             st.subheader(f"Mud Rheology & Fann 35 Viscometer Data (at TD: {d3:,.0f} ft)")
-            st.markdown("*Dial readings represent Krieger-Dougherty fluid mechanics converted into True Shear Stress components at total depth.*")
-            
-            # Tabel reologi dipertahankan dan ditutup kurungnya dengan sempurna
-            rheo_data = {"Parameter": ["Actual Generated LGS (%)", "Plastic Viscosity (cP)", "Yield Point (lb/100ft2)", "Dial Reading 300 RPM", "Dial Reading 600 RPM"]}
-            for sc_name, data in sim_res.items():
-                rheo_data[sc_name] = [
-                    f"{data['lgs'][-1]:.1f}", 
-                    f"{data['pv'][-1]:.1f}", 
-                    f"{data['yp'][-1]:.1f}", 
-                    f"{data['r300'][-1]:.1f}", 
-                    f"{data['r600'][-1]:.1f}"
-                ]
-            st.table(rheo_data)
-
-        with tab4:
-            st.subheader("Comprehensive Section & Depth Logs")
-            for sc_name, data in sim_res.items():
-                st.markdown(f"**{sc_name} Data**")
-                # Kolom Actual MW dan Base MW dipertahankan
-                df = pd.DataFrame({
-                    "Depth (ft)": data["depth"], "Hole (\")": data["hole"], "Generated LGS (%)": data["lgs"], 
-                    "Base MW (ppg)": data["base_mw"], "Actual MW (ppg)": data["actual_mw"], 
-                    "PV (cP)": data["pv"], "YP (lb/100ft2)": data["yp"], "Fann 600": data["r600"], "Fann 300": data["r300"]
-                })
-                st.dataframe(df, use_container_width=True, hide_index=True)
-
-else:
-    st.info("Configure your modular scenarios and equipment in the sidebar, then click 'Run Physics & Mass Balance'.")
+            st.markd
