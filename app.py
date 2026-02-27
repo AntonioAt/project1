@@ -375,4 +375,26 @@ if st.sidebar.button("Run Physics & Mass Balance", type="primary", use_container
                     f"{data['pv'][-1]:.1f}", 
                     f"{data['yp'][-1]:.1f}", 
                     f"{data['r300'][-1]:.1f}", 
-            
+                    f"{data['r600'][-1]:.1f}"
+                ]
+            st.table(rheo_data)
+
+        with tab4:
+            st.subheader("Comprehensive Section & Depth Logs")
+            for sc_name, data in sim_res.items():
+                st.markdown(f"**{sc_name} Data**")
+                df = pd.DataFrame({
+                    "Depth (ft)": data["depth"], 
+                    "Hole (\")": data["hole"], 
+                    "Generated LGS (%)": data["lgs"], 
+                    "Base MW (ppg)": data["base_mw"], 
+                    "Actual MW (ppg)": data["actual_mw"], 
+                    "PV (cP)": data["pv"], 
+                    "YP (lb/100ft2)": data["yp"], 
+                    "Fann 600": data["r600"], 
+                    "Fann 300": data["r300"]
+                })
+                st.dataframe(df, use_container_width=True, hide_index=True)
+
+else:
+    st.info("Configure your modular scenarios and equipment in the sidebar, then click 'Run Physics & Mass Balance'.")
