@@ -11,41 +11,27 @@ class API_MassBalanceAnalyzer:
     def __init__(self, mud_price_bbl=85.0, disposal_price_bbl=18.0):
         self.mud_price = mud_price_bbl
         self.disposal_price = disposal_price_bbl
-        self.liquid_on_cuttings_ratio = 1.0  # Faktor Y: 1 bbl liquid menempel per 1 bbl rock
+        self.liquid_on_cuttings_ratio = 1.0  
 
     def calculate_interval(self, hole_in, length_ft, washout, mech_sre_X, target_lgs_frac):
-        # Eq 2: Volume drilled solids (Vc)
         v_c = 0.000971 * (hole_in**2) * length_ft * washout
-        
-        # Asumsi Vh (Hole Volume) sama dengan Vc
         v_h = v_c  
         
-        # Eq 11: Wet solids volume to be disposed (Vsw)
         v_sw = mech_sre_X * v_c * (1.0 + self.liquid_on_cuttings_ratio)
         mud_lost_on_cuttings = mech_sre_X * v_c * self.liquid_on_cuttings_ratio
-        
-        # Solids retained in the active system
         v_c_retained = v_c * (1.0 - mech_sre_X)
         
-        # 1. Volume Building Requirement (Minimal untuk mengisi lubang dan mengganti lumpur terbuang)
         v_m_volumetric = v_h + mud_lost_on_cuttings
-        
-        # 2. Dilution Requirement (Untuk mempertahankan target LGS)
         v_m_dilution = v_c_retained / target_lgs_frac if target_lgs_frac > 0 else v_m_volumetric
-            
-        # Vm aktual adalah nilai terbesar antara kebutuhan volumetrik atau kebutuhan dilusi
         v_m_actual = max(v_m_volumetric, v_m_dilution)
         
-        # Liquid Waste (Vlw) terjadi jika kita dipaksa melarutkan melebihi kapasitas lubang
         v_lw = max(0.0, v_m_actual - v_m_volumetric)
         
-        # Eq 3 & 4: API Total Efficiency (Et)
         v_d_theoretical = v_c / target_lgs_frac if target_lgs_frac > 0 else 0
         df = v_m_actual / v_d_theoretical if v_d_theoretical > 0 else 1.0
         e_t = (1.0 - df) * 100.0
         e_t = max(0.0, min(e_t, 100.0))
         
-        # Kalkulasi AFE
         cost_mud = v_m_actual * self.mud_price
         cost_disposal = (v_sw + v_lw) * self.disposal_price
         
@@ -70,7 +56,6 @@ class AdvancedDrillingPhysics:
         return self.surface_temp + (self.geo_gradient * (tvd_ft / 100.0))
 
     def calculate_generated_lgs(self, hole_diam_in, rop_fph, gpm, sre_multiplier):
-        # Physics mikro untuk grafik LGS di Annulus
         hole_cap = (hole_diam_in ** 2) / 1029.4
         cuttings_bbl_hr = hole_cap * rop_fph
         mud_bbl_hr = (gpm * 60) / 42.0
@@ -133,10 +118,8 @@ class EconomicsAnalyzer:
 
 def generate_dynamic_log(start_d, end_d, pp_base, fg_base, rop_base, step_ft=500):
     log = []
-    # Menggenerate titik kedalaman setiap 'step_ft' (default: tiap 500 ft) untuk simulasi harian DMR
     points = np.arange(start_d + step_ft, end_d, step_ft)
     
-    # Memastikan titik Total Depth (TD) pasti ikut terekam di akhir log jika tidak pas kelipatan 500
     if len(points) == 0 or points[-1] != end_d:
         points = np.append(points, end_d)
         
@@ -148,7 +131,7 @@ def generate_dynamic_log(start_d, end_d, pp_base, fg_base, rop_base, step_ft=500
     return log
 
 # =============================================================================
-# 2. MODULAR EQUIPMENT CATALOG (WITH CHEMICAL PENALTY)
+# 2. MODULAR EQUIPMENT CATALOG 
 # =============================================================================
 EQUIPMENT_CATALOG = {
     "Shale Shaker": {"mech_efficiency": 0.45, "cost": 500.0, "chem_penalty": 0.0},
@@ -258,17 +241,15 @@ if st.sidebar.button("Run Physics & Mass Balance", type="primary", use_container
             t_cost = 0; t_days = 0; t_invest = 0; t_mud_c = 0; t_disp_c = 0; t_chem_c = 0
             t_vm = 0; t_waste = 0; et_sum = 0
             mech_X = sc_data["mech_X"]
-            sre_mult = 1.0 - mech_X  # Untuk grafik mikro LGS Annulus
+            sre_mult = 1.0 - mech_X  
             
             for sec in sc_data["sections"]:
                 avg_rop = 0; lgs_sum = 0
                 
-                # 1. API Macro Mass Balance (Volume & Economy)
                 vm, vsw, vlw, api_et, c_mud, c_disp = mass_bal.calculate_interval(sec['hole'], sec['len'], sec['wash'], mech_X, target_lgs_frac)
                 t_vm += vm; t_waste += (vsw + vlw); et_sum += api_et
                 t_mud_c += c_mud; t_disp_c += c_disp
                 
-                # 2. Micro Physics (Rheology & Hydraulics Graphs)
                 for d, base_mw, pp, fg, rop_max in sec['log']:
                     temp = engine.get_temp_at_depth(d)
                     
@@ -288,7 +269,6 @@ if st.sidebar.button("Run Physics & Mass Balance", type="primary", use_container
                 
                 sec_avg_lgs = lgs_sum / len(sec['log'])
                 
-                # 3. Time & Operational Costs
                 days, base_cost, rig_c, chem_c = econ.calculate_time_cost(avg_rop/len(sec['log']), sec['len'], sec_avg_lgs, sc_data["daily_eq_cost"], sc_data["chem_penalty"])
                 t_days += days; t_invest += (sc_data["daily_eq_cost"] * days); t_chem_c += chem_c
                 t_cost += base_cost + c_mud + c_disp
@@ -348,12 +328,51 @@ if st.sidebar.button("Run Physics & Mass Balance", type="primary", use_container
 
         with tab2:
             st.subheader("Mass Balance & AFE Economics (API Standard)")
-            summary_data = {"Metric": ["Equipment Selected", "Mud Built (Vm) bbls", "Waste Disposed (Vt) bbls", "API Efficiency (Et)", "1. Mud Cost ($)", "2. Disposal Cost ($)", "3. Barite/Chem Pen. ($)", "4. SRE Capex ($)", "TOTAL AFE COST ($)"]}
+            summary_data = {
+                "Metric": [
+                    "Equipment Selected", 
+                    "Mud Built (Vm) bbls", 
+                    "Waste Disposed (Vt) bbls", 
+                    "API Efficiency (Et)", 
+                    "1. Mud Cost ($)", 
+                    "2. Disposal Cost ($)", 
+                    "3. Barite/Chem Pen. ($)", 
+                    "4. SRE Capex ($)", 
+                    "TOTAL AFE COST ($)"
+                ]
+            }
             for sc_name, data in sim_res.items():
                 eq_str = " + ".join(scenario_configs[sc_name]["equipments"]) if scenario_configs[sc_name]["equipments"] else "None (Bypass)"
-                summary_data[sc_name] = [eq_str, f"{data['total_vm']:,.0f}", f"{data['total_waste']:,.0f}", f"{data['api_et_avg']:.1f}%", f"${data['mud_cost']:,.0f}", f"${data['disp_cost']:,.0f}", f"${data['chem_cost']:,.0f}", f"${data['equip_invest']:,.0f}", f"${data['cost']:,.0f}"]
+                summary_data[sc_name] = [
+                    eq_str, 
+                    f"{data['total_vm']:,.0f}", 
+                    f"{data['total_waste']:,.0f}", 
+                    f"{data['api_et_avg']:.1f}%", 
+                    f"${data['mud_cost']:,.0f}", 
+                    f"${data['disp_cost']:,.0f}", 
+                    f"${data['chem_cost']:,.0f}", 
+                    f"${data['equip_invest']:,.0f}", 
+                    f"${data['cost']:,.0f}"
+                ]
             st.table(summary_data)
 
         with tab3:
             st.subheader(f"Mud Rheology & Fann 35 Viscometer Data (at TD: {d3:,.0f} ft)")
-            st.markd
+            st.markdown("*Dial readings represent Krieger-Dougherty fluid mechanics converted into True Shear Stress components at total depth.*")
+            
+            rheo_data = {
+                "Parameter": [
+                    "Actual Generated LGS (%)", 
+                    "Plastic Viscosity (cP)", 
+                    "Yield Point (lb/100ft2)", 
+                    "Dial Reading 300 RPM", 
+                    "Dial Reading 600 RPM"
+                ]
+            }
+            for sc_name, data in sim_res.items():
+                rheo_data[sc_name] = [
+                    f"{data['lgs'][-1]:.1f}", 
+                    f"{data['pv'][-1]:.1f}", 
+                    f"{data['yp'][-1]:.1f}", 
+                    f"{data['r300'][-1]:.1f}", 
+            
